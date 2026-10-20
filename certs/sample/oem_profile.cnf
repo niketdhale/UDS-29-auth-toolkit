@@ -1,0 +1,34 @@
+# EXAMPLE OEM certificate profile for the sample PKI (see docs/access-control.md).
+# The OID arc 1.3.6.1.4.1.99999.29.x is NOT registered to anybody: an OEM replaces 99999 with its own
+# IANA Private Enterprise Number (PEN) and keeps the layout it chose in its Uds29_CertProfile.
+#
+#   .1  roles          BIT STRING, named bit 0 = workshop, 1 = engineering, 2 = oem
+#   .2  allowed SIDs   OCTET STRING, one byte per service id
+#   .3  allowed DIDs   OCTET STRING, two bytes (big endian) per data identifier
+#   .4  allowed RIDs   OCTET STRING, two bytes per routine identifier
+#   .5  roles (alt)    INTEGER mask, same meaning as .1 (only in tester_oem, to exercise INTEGER_MASK)
+# Non-critical extensions: a verifier that does not know them still accepts the certificate.
+
+[workshop]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature
+1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:0
+
+[engineering]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature
+1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:1
+
+[oem]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature
+1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:2
+1.3.6.1.4.1.99999.29.5=ASN1:INTEGER:4
+
+# OEM role, but this particular certificate may only use 0x22 / 0x3E, and only DIDs F190 and F18C
+[allowlist]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature
+1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:2
+1.3.6.1.4.1.99999.29.2=ASN1:FORMAT:HEX,OCTETSTRING:223E
+1.3.6.1.4.1.99999.29.3=ASN1:FORMAT:HEX,OCTETSTRING:F190F18C

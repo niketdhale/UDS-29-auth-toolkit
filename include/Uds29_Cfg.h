@@ -17,6 +17,9 @@
 #ifndef UDS29_LOG_DEPTH
 #define UDS29_LOG_DEPTH 32u           /* exchange log entries kept; the oldest is dropped when full */
 #endif
+#ifndef UDS29_MAX_ALLOW
+#define UDS29_MAX_ALLOW 32u           /* entries per certificate allow-list (services, DIDs, RIDs) */
+#endif
 #ifndef UDS29_P2_TIMEOUT_MS
 #define UDS29_P2_TIMEOUT_MS 5000u     /* non-blocking API: max wait for each response before the session FAILS */
 #endif

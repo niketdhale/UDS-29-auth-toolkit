@@ -1,9 +1,14 @@
 #include "Uds29.h"
 #include "Uds29_SimEcu.h"
+#include "Uds29_Server.h"
+#include "access_example.h"
+#include "Uds29_Der.h"
+#include <cstring>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -49,6 +54,117 @@ static void Decode(const Uds29_Bytes& b) {
     } else std::puts("[ERR] not a valid SID 0x29 request or response (or a field exceeds the UDS29_MAX_* buffer sizes)");
 }
 
+
+/* ── certificate inspection ── */
+static bool LoadCert(const std::string& path, bool der, Uds29_Bytes& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    out.clear();
+    if (der) { out.assign(raw.begin(), raw.end()); return !out.empty(); }
+    size_t b = raw.find("-----BEGIN CERTIFICATE-----"), e = raw.find("-----END CERTIFICATE-----");
+    if (b == std::string::npos || e == std::string::npos) return false;
+    uint32_t acc = 0; int bits = 0;
+    for (size_t i = b + 27; i < e; i++) {
+        const char* t = std::strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", raw[i]);
+        if (!t || !raw[i]) continue;                 /* skips newlines and '=' */
+        acc = (acc << 6) | (uint32_t)(t - "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+        if ((bits += 6) >= 8) { bits -= 8; out.push_back((uint8_t)(acc >> bits)); }
+    }
+    return !out.empty();
+}
+
+static std::string Dotted(const uint8_t* v, size_t n) {
+    std::string s; uint32_t x = 0;
+    for (size_t i = 0; i < n; i++) {
+        x = (x << 7) | (v[i] & 0x7F);
+        if (v[i] & 0x80) continue;
+        if (s.empty()) s = std::to_string(x / 40 > 2 ? 2 : x / 40) + "." + std::to_string(x - 40 * (x / 40 > 2 ? 2 : x / 40));
+        else s += "." + std::to_string(x);
+        x = 0;
+    }
+    return s;
+}
+
+/* RDNSequence -> "CN=..., OU=..." */
+static std::string Name(const uint8_t* v, size_t n) {
+    static const struct { const char* oid; const char* name; } kN[] = {
+        {"2.5.4.3", "CN"}, {"2.5.4.6", "C"}, {"2.5.4.7", "L"}, {"2.5.4.8", "ST"}, {"2.5.4.10", "O"}, {"2.5.4.11", "OU"}};
+    std::string out;
+    const uint8_t *p = v, *end = v + n, *rv, *av, *ov, *sv;
+    uint8_t t, at, ot, st; size_t rl, al, ol, sl;
+    while (Uds29_Der_Tlv(&p, end, &t, &rv, &rl)) {
+        const uint8_t* a = rv;
+        while (Uds29_Der_Tlv(&a, rv + rl, &at, &av, &al)) {
+            const uint8_t* q = av;
+            if (!Uds29_Der_Tlv(&q, av + al, &ot, &ov, &ol) || !Uds29_Der_Tlv(&q, av + al, &st, &sv, &sl)) continue;
+            std::string o = Dotted(ov, ol), nm = o;
+            for (auto& k : kN) if (o == k.oid) nm = k.name;
+            out += (out.empty() ? "" : ", ") + nm + "=" + std::string((const char*)sv, sl);
+        }
+    }
+    return out;
+}
+
+static std::string Time(const uint8_t* v, size_t n, uint8_t tag) {
+    std::string d((const char*)v, n);
+    if (tag == 0x17 && n >= 12) d = (d[0] < '5' ? "20" : "19") + d;       /* UTCTime YYMMDDHHMMSSZ */
+    if (d.size() < 14) return d;
+    return d.substr(0, 4) + "-" + d.substr(4, 2) + "-" + d.substr(6, 2) + " " + d.substr(8, 2) + ":" + d.substr(10, 2) + ":" + d.substr(12, 2);
+}
+
+static void InspectCert(const Uds29_Bytes& c) {
+    const uint8_t *p = c.data(), *end = p + c.size(), *v;
+    uint8_t t; size_t l;
+    std::string subject, issuer, nb, na;
+    bool ok = Uds29_Der_Tlv(&p, end, &t, &v, &l) && t == 0x30;
+    if (ok) { p = v; end = v + l; ok = Uds29_Der_Tlv(&p, end, &t, &v, &l) && t == 0x30; }   /* TBSCertificate */
+    if (ok) {
+        p = v; end = v + l;
+        ok = Uds29_Der_Tlv(&p, end, &t, &v, &l);
+        if (ok && t == 0xA0) ok = Uds29_Der_Tlv(&p, end, &t, &v, &l);                       /* version, serial */
+        ok = ok && Uds29_Der_Tlv(&p, end, &t, &v, &l);                                      /* signature algorithm */
+        ok = ok && Uds29_Der_Tlv(&p, end, &t, &v, &l);                                      /* issuer */
+        if (ok) issuer = Name(v, l);
+        ok = ok && Uds29_Der_Tlv(&p, end, &t, &v, &l);                                      /* validity */
+        if (ok) {
+            const uint8_t *q = v, *tv; uint8_t tt; size_t tl;
+            if (Uds29_Der_Tlv(&q, v + l, &tt, &tv, &tl)) nb = Time(tv, tl, tt);
+            if (Uds29_Der_Tlv(&q, v + l, &tt, &tv, &tl)) na = Time(tv, tl, tt);
+        }
+        ok = ok && Uds29_Der_Tlv(&p, end, &t, &v, &l);                                      /* subject */
+        if (ok) subject = Name(v, l);
+    }
+    if (!ok) { std::puts("[ERR] not a valid X.509 certificate"); return; }
+    std::printf("subject: %s\nissuer:  %s\nvalid:   %s .. %s UTC\n", subject.c_str(), issuer.c_str(), nb.c_str(), na.c_str());
+    Uds29_Authz a;
+    if (Uds29_Authz_FromCert(&kExampleProfile, c.data(), (uint16_t)c.size(), &a) != E_OK) {
+        std::puts("authz:   MALFORMED value for the example profile");
+        return;
+    }
+    std::printf("authz (example profile 1.3.6.1.4.1.99999.29.x): roles=0x%08X", a.roles);
+    if (a.roles & EX_ROLE_WORKSHOP) std::printf(" workshop");
+    if (a.roles & EX_ROLE_ENGINEERING) std::printf(" engineering");
+    if (a.roles & EX_ROLE_OEM) std::printf(" oem");
+    std::printf("\n  services: ");
+    for (unsigned i = 0; i < a.n_services; i++) std::printf("%02X ", a.services[i]);
+    std::printf("%s\n  dids:     ", a.n_services ? "" : "(any)");
+    for (unsigned i = 0; i < a.n_dids; i++) std::printf("%04X ", a.dids[i]);
+    std::printf("%s\n  rids:     ", a.n_dids ? "" : "(any)");
+    for (unsigned i = 0; i < a.n_rids; i++) std::printf("%04X ", a.rids[i]);
+    std::printf("%s\n", a.n_rids ? "" : "(any)");
+}
+
+static void CertCommand(const std::string& a, const std::string& rest) {
+    std::istringstream r(rest);
+    std::string file, fmt;
+    r >> file >> fmt;
+    Uds29_Bytes c;
+    if (a != "inspect" || file.empty()) { std::puts("[ERR] cert inspect <file> [der]"); return; }
+    if (!LoadCert(file, fmt == "der", c)) { std::puts("[ERR] cannot read certificate (PEM; add 'der' for DER)"); return; }
+    InspectCert(c);
+}
+
 static void OnEvent(const Uds29_EventType* e) {
     if (e->kind == UDS29_EVT_STATE_CHANGE) std::printf("  [event] state -> %s\n", kStates[e->state]);
     else std::printf("  [event] FAILURE sub=0x%02X nrc=0x%02X %s\n", e->sub_function, e->nrc, e->description);
@@ -65,7 +181,7 @@ static void OnDem(const IdsM_EventReportType* r) { g_dem++; g_last_sev = r->seve
 
 static void Help() {
     std::puts("Commands: help, pki sample | pki load <ca> <cert> <key> [der],\n"
-              "          auth uni|bi, deauth, send <hex>, decode <hex>,\n"
+              "          auth uni|bi, deauth, send <hex>, decode <hex>, cert inspect <file> [der],\n"
               "          inject <none|expired|badsig|mismatch|wrongfmt|nrc <hex>>,\n"
               "          status, log, clear"
 #ifdef UDS29_WITH_IDSM
@@ -74,7 +190,75 @@ static void Help() {
               ", quit");
 }
 
-int main() {
+/* --role server: stdin = hex requests, stdout = hex responses (one per line), ECU identity from the sample PKI
+   or --ca/--cert/--key. The example access rules and certificate profile (examples/access_example.h) are active.
+   Extra commands: access <hex> (policy check of a request), login <cert.pem> <key.pem> (authenticate a tester
+   in-process, so there is a client to check), logout, authz. */
+static Std_ReturnType ToServer(const uint8_t* req, uint16_t len, uint8_t* resp, uint16_t* n, void*) {
+    return Uds29Srv_HandleRequest(req, len, resp, n);
+}
+
+static int ServerMain(int argc, char** argv) {
+    Uds29Srv_ConfigType c{};
+    c.pki.mode = UDS29_PKI_SAMPLE;
+    c.profile = &kExampleProfile;
+    std::string root = std::string(UDS29_SAMPLE_DIR) + "/root_ca.pem";
+    for (int i = 0; i < argc; i++) {
+        if (!std::strcmp(argv[i], "--ca") && i + 1 < argc) { c.pki.mode = UDS29_PKI_USER; c.pki.root_ca_path = argv[++i]; root = c.pki.root_ca_path; }
+        else if (!std::strcmp(argv[i], "--cert") && i + 1 < argc) { c.pki.mode = UDS29_PKI_USER; c.pki.cert_path = argv[++i]; }
+        else if (!std::strcmp(argv[i], "--key") && i + 1 < argc) { c.pki.mode = UDS29_PKI_USER; c.pki.key_path = argv[++i]; }
+    }
+    if (Uds29Srv_Init(&c) != E_OK) { std::fputs("ERR cannot load ECU PKI\n", stderr); return 1; }
+    Uds29Srv_SetAccessRules(kExampleRules, EX_NRULES);
+    Uds29_ConfigType cc{0x00, 32};
+    Uds29_Init(&cc);
+    Uds29_SetTransport(ToServer, nullptr);
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        Uds29_Bytes b;
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream in(line);
+        std::string cmd; in >> cmd;
+        if (cmd == "login") {
+            std::string crt, key; in >> crt >> key;
+            Uds29_PkiConfigType p{}; p.mode = UDS29_PKI_USER; p.root_ca_path = root.c_str(); p.cert_path = crt.c_str(); p.key_path = key.c_str();
+            bool ok = Uds29_SetPki(&p) == E_OK && Uds29_AuthenticateUnidirectional() == E_OK;
+            std::puts(ok ? "LOGIN OK" : "LOGIN FAILED");
+            continue;
+        }
+        if (cmd == "logout") { std::puts(Uds29_DeAuthenticate() == E_OK ? "LOGOUT OK" : "LOGOUT FAILED"); continue; }
+        if (cmd == "authz") {
+            Uds29_Authz a;
+            if (Uds29Srv_GetAuthz(&a) != E_OK) { std::puts("not authenticated"); continue; }
+            std::printf("roles=0x%08X services=%u dids=%u rids=%u\n", a.roles, a.n_services, a.n_dids, a.n_rids);
+            continue;
+        }
+        if (cmd == "access") {
+            std::string rest; std::getline(in, rest);
+            if (!ParseHex(rest, b) || b.size() > UDS29_MAX_MSG_LEN) { std::puts("ERR bad hex"); continue; }
+            uint8_t nrc = 0;
+            if (Uds29Srv_CheckAccess(b.data(), (uint16_t)b.size(), &nrc) == E_OK) std::puts("ALLOWED");
+            else std::printf("DENIED %02X %02X %02X\n", 0x7F, b[0], nrc);
+            continue;
+        }
+        if (!ParseHex(line, b) || b.size() > UDS29_MAX_MSG_LEN) { std::puts("ERR bad hex"); continue; }
+        uint8_t rx[UDS29_MAX_MSG_LEN]; uint16_t n = sizeof rx;
+        if (Uds29Srv_HandleRequest(b.data(), (uint16_t)b.size(), rx, &n) != E_OK) { std::puts("ERR no response"); continue; }
+        std::puts(Hex(rx, n).c_str());
+    }
+    Uds29_DeInit();
+    Uds29Srv_DeInit();
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; i++) {
+        if (!std::strcmp(argv[i], "--role") && i + 1 < argc) {
+            const char* r = argv[i + 1];
+            if (!std::strcmp(r, "server")) return ServerMain(argc - 1, argv + 1);
+            if (std::strcmp(r, "client")) { std::fputs("usage: uds29_cli [--role client|server [--ca F --cert F --key F]]\n", stderr); return 2; }
+        }
+    }
     Uds29SimEcu ecu;
     Uds29_ConfigType cfg{0x00, 32};
     Uds29_Init(&cfg);
@@ -164,6 +348,7 @@ int main() {
             }
         }
         else if (cmd == "clear") Uds29_ClearLog();
+        else if (cmd == "cert") CertCommand(a, rest);
 #ifdef UDS29_WITH_IDSM
         else if (cmd == "idsm" && a == "status")
             {

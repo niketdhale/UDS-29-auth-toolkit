@@ -78,3 +78,11 @@ Std_ReturnType Uds29_Crypto_Random(uint8_t* out, uint16_t n) {
     if (!o || (n && !out)) return E_NOT_OK;
     return o->random(o->ctx, out, n);
 }
+
+Std_ReturnType Uds29_Crypto_GetExtension(const uint8_t* cert_der, uint16_t cert_len, const uint8_t* oid_der, uint8_t oid_len,
+                                         uint8_t* out, uint16_t cap, uint16_t* out_len) {
+    const Uds29_CryptoOpsType* o = Uds29_GetCryptoOps();
+    if (!o || !o->get_extension || !cert_der || !oid_der || !out || !out_len) return E_NOT_OK;
+    *out_len = 0;
+    return o->get_extension(o->ctx, cert_der, cert_len, oid_der, oid_len, out, cap, out_len);
+}
