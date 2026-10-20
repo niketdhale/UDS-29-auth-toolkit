@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(uds29_consumer C)
+find_package(uds29 REQUIRED)
+add_executable(consumer main.c)
+target_link_libraries(consumer PRIVATE uds29::uds29)

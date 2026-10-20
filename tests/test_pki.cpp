@@ -1,11 +1,45 @@
 #include <gtest/gtest.h>
-#include "Uds29_Pki.h"
+#include "Uds29_SimEcu.h"
 #include <cstdlib>
 #include <filesystem>
 #include <string>
 
 namespace fs = std::filesystem;
 static const std::string S = std::string(UDS29_SAMPLE_DIR) + "/";
+
+/* Test-side RAII wrapper over the crypto port (whichever backend is built). */
+class Uds29Pki {
+public:
+    ~Uds29Pki() { Uds29_Crypto_FreeIdentity(h_); }
+    bool Load(const Uds29_PkiConfigType& cfg, const char* role = "tester") {
+        Uds29_Crypto_FreeIdentity(h_);
+        n_ = 0;
+        h_ = Uds29_Crypto_LoadIdentity(&cfg, role, cert_, sizeof cert_, &n_);
+        return h_ != nullptr;
+    }
+    Uds29_Bytes CertDer() const { return Uds29_Bytes(cert_, cert_ + n_); }
+    Uds29_PkiResult VerifyPeer(const Uds29_Bytes& c, time_t at = 0) const {
+        return Uds29_Crypto_VerifyPeer(h_, c.data(), uint16_t(c.size()), at);
+    }
+    bool Sign(const Uds29_Bytes& d, Uds29_Bytes& sig) const {
+        uint8_t b[UDS29_MAX_SIG_LEN]; uint16_t n = 0;
+        if (Uds29_Crypto_Sign(h_, d.data(), uint16_t(d.size()), b, sizeof b, &n) != E_OK) return false;
+        sig.assign(b, b + n);
+        return true;
+    }
+    static bool Verify(const Uds29_Bytes& c, const Uds29_Bytes& d, const Uds29_Bytes& sig) {
+        return Uds29_Crypto_Verify(c.data(), uint16_t(c.size()), d.data(), uint16_t(d.size()), sig.data(), uint16_t(sig.size())) == E_OK;
+    }
+    static Uds29_Bytes Random(size_t n) {
+        Uds29_Bytes b(n);
+        if (Uds29_Crypto_Random(b.data(), uint16_t(n)) != E_OK) b.clear();
+        return b;
+    }
+private:
+    void* h_ = nullptr;
+    uint8_t cert_[UDS29_MAX_CERT_LEN];
+    uint16_t n_ = 0;
+};
 
 static Uds29_PkiConfigType Sample() { Uds29_PkiConfigType c{}; c.mode = UDS29_PKI_SAMPLE; return c; }
 
@@ -80,6 +114,9 @@ TEST(Pki, SignVerifyEcdsa) {
 }
 
 TEST(Pki, SignVerifyEd25519) {
+#ifdef UDS29_CRYPTO_MBEDTLS
+    GTEST_SKIP() << "Ed25519 is not supported by the mbedTLS backend";
+#endif
     fs::path d = fs::temp_directory_path() / "uds29_pki_ed";
     fs::create_directories(d);
     std::string k = (d / "k.pem").string(), c = (d / "c.pem").string();

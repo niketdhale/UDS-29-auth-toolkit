@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/@UDS29_PC_UP@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: uds29
+Description: UDS 0x29 (Authentication) client
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -luds29
+Libs.private: @UDS29_PC_LIBS_PRIVATE@
+Cflags: -I${includedir} @UDS29_PC_DEFS@

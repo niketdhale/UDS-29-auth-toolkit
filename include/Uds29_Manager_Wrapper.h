@@ -1,6 +1,7 @@
 #pragma once
 #include "Uds29_Types.h"
 #include "Uds29_Transport.h"
+#include "Uds29.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,11 @@ uint32_t       Uds29_Core_GetLogCount(void);
 Std_ReturnType Uds29_Core_GetLogEntry(uint32_t index, Uds29_DirectionType* dir,
                                       uint8_t* buf, uint16_t cap, uint16_t* len);
 void           Uds29_Core_ClearLog(void);
+Std_ReturnType Uds29_Core_SetTxCallback(Uds29_TxCallback fn, void* ctx);
+Std_ReturnType Uds29_Core_Start(int op); /* 0 uni, 1 bi, 2 deauth */
+void           Uds29_Core_MainFunction(void);
+Std_ReturnType Uds29_Core_RxIndication(const uint8_t* resp, uint16_t len);
+void           Uds29_Core_SetClockForTest(uint32_t (*fn)(void)); /* tests only; NULL restores the OS clock */
 
 #ifdef __cplusplus
 }

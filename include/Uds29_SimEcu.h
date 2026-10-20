@@ -1,6 +1,11 @@
 #pragma once
+/* Host-only test double (STL allowed): not part of the embeddable core, built as the uds29_sim target. */
 #include "Uds29_Transport.h"
-#include "Uds29_Pki.h"
+#include "Uds29_Codec.h"
+#include "Uds29_Crypto.h"
+#include <vector>
+
+typedef std::vector<uint8_t> Uds29_Bytes;
 
 enum Uds29_SimFault {
     UDS29_SIM_FAULT_NONE = 0,
@@ -14,7 +19,12 @@ enum Uds29_SimFault {
 /* Loopback server side of SID 0x29 (sub-functions 0x00-0x03 and 0x08). */
 class Uds29SimEcu {
 public:
-    bool Init(const Uds29_PkiConfigType& cfg) { return pki_.Load(cfg, "ecu"); }
+    Uds29SimEcu() = default;
+    ~Uds29SimEcu() { Uds29_Crypto_FreeIdentity(id_); }
+    Uds29SimEcu(const Uds29SimEcu&) = delete;
+    Uds29SimEcu& operator=(const Uds29SimEcu&) = delete;
+
+    bool Init(const Uds29_PkiConfigType& cfg);
     void SetFault(Uds29_SimFault f, uint8_t nrc = 0) { fault_ = f; forced_nrc_ = nrc; }
 
     /* Usable as Uds29_TransportFn with ctx = Uds29SimEcu*. */
@@ -23,7 +33,9 @@ public:
 private:
     Uds29_Bytes Handle(const uint8_t* req, size_t len);
 
-    Uds29Pki pki_;
+    void* id_ = nullptr;
+    uint8_t cert_[UDS29_MAX_CERT_LEN];
+    uint16_t cert_len_ = 0;
     Uds29_SimFault fault_ = UDS29_SIM_FAULT_NONE;
     uint8_t forced_nrc_ = 0;
     bool cert_ok_ = false;

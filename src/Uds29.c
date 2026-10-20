@@ -30,3 +30,14 @@ Std_ReturnType Uds29_GetLogEntry(uint32_t index, Uds29_DirectionType* dir,
     return Uds29_Core_GetLogEntry(index, dir, buf, cap, len);
 }
 void Uds29_ClearLog(void) { Uds29_Core_ClearLog(); }
+Std_ReturnType Uds29_SetTxCallback(Uds29_TxCallback fn, void* ctx) { return Uds29_Core_SetTxCallback(fn, ctx); }
+Std_ReturnType Uds29_StartAuthentication(Uds29_AuthDirectionType d) {
+    if (d != UDS29_AUTH_UNIDIRECTIONAL && d != UDS29_AUTH_BIDIRECTIONAL) return E_NOT_OK;
+    return Uds29_Core_Start((int)d);
+}
+Std_ReturnType Uds29_StartDeAuthentication(void) { return Uds29_Core_Start(2); }
+void Uds29_MainFunction(void) { Uds29_Core_MainFunction(); }
+Std_ReturnType Uds29_RxIndication(const uint8_t* resp, uint16_t len) {
+    if (!resp) return E_PARAM_POINTER;
+    return Uds29_Core_RxIndication(resp, len);
+}
