@@ -28,6 +28,11 @@ typedef struct {
     Std_ReturnType (*verify)(void* ctx, const uint8_t* cert_der, uint16_t cert_len,
                              const uint8_t* data, uint16_t len, const uint8_t* sig, uint16_t sig_len);
     Std_ReturnType (*random)(void* ctx, uint8_t* out, uint16_t n);
+    /* OPTIONAL (NULL = not supported; certificate-extension based access control then reads nothing).
+       Finds the X.509 v3 extension with OID oid_der (full DER: 06 len ...) in cert_der and writes its extnValue
+       content (the DER inside the OCTET STRING) to out. E_NOT_OK if absent, malformed or larger than cap. */
+    Std_ReturnType (*get_extension)(void* ctx, const uint8_t* cert_der, uint16_t cert_len,
+                                    const uint8_t* oid_der, uint8_t oid_len, uint8_t* out, uint16_t cap, uint16_t* out_len);
 } Uds29_CryptoOpsType;
 
 /* Copies *ops (all function pointers required, else E_PARAM_POINTER). NULL restores the built-in backend.
@@ -45,6 +50,8 @@ Std_ReturnType  Uds29_Crypto_Sign(void* id, const uint8_t* data, uint16_t len, u
 Std_ReturnType  Uds29_Crypto_Verify(const uint8_t* cert_der, uint16_t cert_len, const uint8_t* data, uint16_t len,
                                     const uint8_t* sig, uint16_t sig_len);
 Std_ReturnType  Uds29_Crypto_Random(uint8_t* out, uint16_t n);
+Std_ReturnType  Uds29_Crypto_GetExtension(const uint8_t* cert_der, uint16_t cert_len, const uint8_t* oid_der, uint8_t oid_len,
+                                          uint8_t* out, uint16_t cap, uint16_t* out_len); /* E_NOT_OK if unsupported */
 
 /* Provided by the selected backend (not built for UDS29_CRYPTO=CUSTOM). */
 const Uds29_CryptoOpsType* Uds29_Crypto_BuiltinOps(void);

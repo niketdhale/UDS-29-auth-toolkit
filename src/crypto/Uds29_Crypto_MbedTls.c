@@ -8,6 +8,7 @@
 #include "Uds29_Crypto.h"
 #include "Uds29_Cfg.h"
 #include "Uds29_Os.h"
+#include "../Uds29_Der.h"
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
@@ -190,7 +191,27 @@ static Std_ReturnType Random(void* ctx, uint8_t* out, uint16_t n) {
     return Rng(NULL, out, n) == 0 ? E_OK : E_NOT_OK;
 }
 
+/* crt.v3_ext.p points at the Extensions SEQUENCE; parse_der keeps its own copy of the bytes. */
+static Std_ReturnType GetExtension(void* ctx, const uint8_t* cert_der, uint16_t cert_len, const uint8_t* oid, uint8_t oid_len,
+                                   uint8_t* out, uint16_t cap, uint16_t* out_len) {
+    (void)ctx;
+    mbedtls_x509_crt c;
+    mbedtls_x509_crt_init(&c);
+    Std_ReturnType r = E_NOT_OK;
+    const uint8_t* v;
+    size_t vl;
+    if (oid_len > 2 && oid[0] == 0x06 && oid[1] == oid_len - 2u && cert_len &&
+        mbedtls_x509_crt_parse_der(&c, cert_der, cert_len) == 0 && c.v3_ext.p &&
+        Uds29_Der_FindExt(c.v3_ext.p, c.v3_ext.len, oid + 2, oid_len - 2u, &v, &vl) && vl <= cap) {
+        memcpy(out, v, vl);
+        *out_len = (uint16_t)vl;
+        r = E_OK;
+    }
+    mbedtls_x509_crt_free(&c);
+    return r;
+}
+
 const Uds29_CryptoOpsType* Uds29_Crypto_BuiltinOps(void) {
-    static const Uds29_CryptoOpsType ops = {NULL, LoadIdentity, FreeIdentity, VerifyPeer, Sign, Verify, Random};
+    static const Uds29_CryptoOpsType ops = {NULL, LoadIdentity, FreeIdentity, VerifyPeer, Sign, Verify, Random, GetExtension};
     return &ops;
 }

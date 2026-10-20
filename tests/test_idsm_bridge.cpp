@@ -2,6 +2,7 @@
 #include "Uds29.h"
 #include "Uds29_IdsM.h"
 #include "Uds29_SimEcu.h"
+#include "Uds29_Server.h"
 #include "IdsM.h"
 #include <chrono>
 #include <mutex>
@@ -79,4 +80,20 @@ TEST_F(Bridge, CustomMappingAndDisable) {
     ASSERT_EQ(g_rx.size(), 1u);
     EXPECT_EQ(g_rx[0].event_id, 0x1234);
     EXPECT_EQ(g_rx[0].payload_len, 0);
+}
+
+TEST_F(Bridge, AttachedToServerReportsNrcsItSent) {
+    cfg.success = {0x1234, IDSM_SEVERITY_LOW, true};
+    ASSERT_EQ(Uds29_IdsM_InitServer(&cfg), E_OK);
+    ecu.SetFault(UDS29_SIM_FAULT_BAD_SIGNATURE);          /* server rejects the client's proof: NRC 0x58 */
+    EXPECT_EQ(Uds29_AuthenticateUnidirectional(), E_NOT_OK);
+    ecu.SetFault(UDS29_SIM_FAULT_NONE);
+    EXPECT_EQ(Uds29_AuthenticateUnidirectional(), E_OK);  /* server AUTHENTICATED: success entry */
+    EXPECT_TRUE(Uds29Srv_IsAuthenticated());
+    WaitDem(2);
+    ASSERT_EQ(g_rx.size(), 2u);
+    EXPECT_EQ(g_rx[0].event_id, 0x2958);
+    EXPECT_EQ(g_rx[0].severity, IDSM_SEVERITY_CRITICAL);
+    EXPECT_EQ(g_pl[0], (std::vector<uint8_t>{0x58, 0x03, UDS29_STATE_IDLE}));
+    EXPECT_EQ(g_rx[1].event_id, 0x1234);
 }

@@ -16,6 +16,10 @@ jobs:
             flags: "-DUDS29_FREERTOS_COMPILE_CHECK=ON"
           - name: shared
             flags: "-DBUILD_SHARED_LIBS=ON"
+          - name: role-client
+            flags: "-DUDS29_ROLE=CLIENT"
+          - name: role-server
+            flags: "-DUDS29_ROLE=SERVER"
           - name: idsm
             flags: "-DUDS29_ENABLE_IDSM=ON -DIDSM_TOOLKIT_DIR=${{ github.workspace }}/autosar-idsm-toolkit"
             idsm: true
@@ -33,6 +37,28 @@ jobs:
       - run: cmake -S uds29 -B build ${{ matrix.flags }}
       - run: cmake --build build -j
       - run: ctest --test-dir build --output-on-failure
+      # two-process DoIP demo (also ctest doip_demo_uni / doip_demo_bi) and the ISO-TP loopback tests; ROLE=BOTH only
+      - name: two-process DoIP demo
+        if: "!contains(matrix.flags, 'UDS29_ROLE=')"
+        run: sh uds29/tests/run_doip_demo.sh build/doip_server_demo build/doip_client_demo bi
+      - name: ISO-TP loopback and access control tests
+        if: "!contains(matrix.flags, 'UDS29_ROLE=')"
+        run: ./build/test_isotp && ./build/test_authz && ./build/access_control_demo
+
+  # Raw SocketCAN demos over a virtual CAN interface. The runner kernel may lack the vcan module: not a gate.
+  socketcan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev can-utils
+      - run: |
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set up vcan0
+      - run: cmake -S . -B build && cmake --build build -j
+      - run: sh tests/run_can_demo.sh build/can_server_demo build/can_client_demo uni vcan0
+      - run: sh tests/run_can_demo.sh build/can_server_demo build/can_client_demo bi vcan0
 
   install-consumer:
     runs-on: ubuntu-latest

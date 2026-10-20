@@ -1,5 +1,5 @@
 #pragma once
-/* Optional bridge: Uds29 events -> IdsM_ReportEvent. Built only with UDS29_ENABLE_IDSM=ON. */
+/* Optional bridge: Uds29 events (client and/or server) -> IdsM_ReportEvent. Built only with UDS29_ENABLE_IDSM=ON. */
 #include "Uds29_Types.h"
 #include "IdsM_Types.h"
 
@@ -24,8 +24,12 @@ typedef struct {
 /* Defaults: monitor 0x0290; failures enabled, event_id = 0x2900 | nrc, HIGH;
    NRC 0x58 (ownership verification failed) CRITICAL; success 0x29F0 LOW, disabled; payload on. */
 void           Uds29_IdsM_GetDefaultConfig(Uds29_IdsM_ConfigType* cfg);
-/* Copies cfg and registers the bridge via Uds29_SetEventCallback (replaces any other callback). */
+/* Copies cfg and registers the bridge via Uds29_SetEventCallback (replaces any other callback). Client role. */
 Std_ReturnType Uds29_IdsM_Init(const Uds29_IdsM_ConfigType* cfg);
+/* Same mapping config, registered via Uds29Srv_SetEventCallback. Server role: "failure" events are the NRCs the
+   ECU sent (nrc != 0) and auth timeouts (nrc == 0, failure_no_nrc entry). Shares the config with the client bridge. */
+Std_ReturnType Uds29_IdsM_InitServer(const Uds29_IdsM_ConfigType* cfg);
+/* Unregisters whichever of the two callbacks this bridge registered. */
 Std_ReturnType Uds29_IdsM_DeInit(void);
 /* The registered callback itself; call it from your own callback if you need to chain. */
 void           Uds29_IdsM_OnEvent(const Uds29_EventType* event);

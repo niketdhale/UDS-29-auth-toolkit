@@ -5,6 +5,7 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -117,7 +118,28 @@ static Std_ReturnType Random(void* ctx, uint8_t* out, uint16_t n) {
     return (n == 0 || RAND_bytes(out, n) == 1) ? E_OK : E_NOT_OK;
 }
 
+static Std_ReturnType GetExtension(void* ctx, const uint8_t* cert_der, uint16_t cert_len, const uint8_t* oid, uint8_t oid_len,
+                                   uint8_t* out, uint16_t cap, uint16_t* out_len) {
+    (void)ctx;
+    X509* c = ParseDer(cert_der, cert_len);
+    const unsigned char* p = oid;
+    ASN1_OBJECT* o = c ? d2i_ASN1_OBJECT(NULL, &p, oid_len) : NULL;
+    int i = o ? X509_get_ext_by_OBJ(c, o, -1) : -1;
+    Std_ReturnType r = E_NOT_OK;
+    if (i >= 0) {
+        const ASN1_OCTET_STRING* d = X509_EXTENSION_get_data(X509_get_ext(c, i));
+        if (d && d->length >= 0 && (size_t)d->length <= cap) {
+            memcpy(out, d->data, (size_t)d->length);
+            *out_len = (uint16_t)d->length;
+            r = E_OK;
+        }
+    }
+    ASN1_OBJECT_free(o);
+    X509_free(c);
+    return r;
+}
+
 const Uds29_CryptoOpsType* Uds29_Crypto_BuiltinOps(void) {
-    static const Uds29_CryptoOpsType ops = {NULL, LoadIdentity, FreeIdentity, VerifyPeer, Sign, Verify, Random};
+    static const Uds29_CryptoOpsType ops = {NULL, LoadIdentity, FreeIdentity, VerifyPeer, Sign, Verify, Random, GetExtension};
     return &ops;
 }
