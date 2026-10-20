@@ -6,6 +6,11 @@
 extern "C" {
 #endif
 
+/* Non-blocking API: sends one request. req is valid only during the call; the callback may call
+   Uds29_RxIndication() synchronously (loopback) but must not use req afterwards. Return E_OK if sent. */
+typedef Std_ReturnType (*Uds29_TxCallback)(const uint8_t* req, uint16_t len, void* ctx);
+typedef enum { UDS29_AUTH_UNIDIRECTIONAL = 0, UDS29_AUTH_BIDIRECTIONAL = 1 } Uds29_AuthDirectionType;
+
 Std_ReturnType Uds29_Init(const Uds29_ConfigType* config);
 Std_ReturnType Uds29_DeInit(void);
 Std_ReturnType Uds29_SetTransport(Uds29_TransportFn fn, void* ctx);
@@ -20,6 +25,18 @@ Std_ReturnType Uds29_AuthenticateBidirectional(void);
 /* 0x00 */
 Std_ReturnType Uds29_DeAuthenticate(void);
 Uds29_StateType Uds29_GetState(void);
+
+/* Non-blocking flow (same state machine as the calls above; blocking calls are refused while it runs):
+   Start*() queues the first request (E_MODE_INVALID if not initialised/no PKI/no TX callback, E_NOT_OK if a flow is
+   already running); Uds29_MainFunction() (call cyclically) sends each queued request via the TX callback and fails
+   the session if no response arrives within UDS29_P2_TIMEOUT_MS; Uds29_RxIndication() delivers the response
+   (E_NOT_OK if no request is pending or len > UDS29_MAX_MSG_LEN; otherwise E_OK, and NRCs/malformed
+   data are reported through Uds29_GetState() and the event callback). Progress and result: Uds29_GetState(). */
+Std_ReturnType Uds29_SetTxCallback(Uds29_TxCallback fn, void* ctx);
+Std_ReturnType Uds29_StartAuthentication(Uds29_AuthDirectionType direction);
+Std_ReturnType Uds29_StartDeAuthentication(void);
+void           Uds29_MainFunction(void);
+Std_ReturnType Uds29_RxIndication(const uint8_t* resp, uint16_t len);
 
 /* Sends bytes as-is and logs them; no state change. *resp_len = capacity in, length out. */
 Std_ReturnType Uds29_SendRaw(const uint8_t* req, uint16_t len, uint8_t* resp, uint16_t* resp_len);

@@ -37,16 +37,16 @@ static bool ParseHex(std::string s, Uds29_Bytes& out) {
 }
 
 static void Decode(const Uds29_Bytes& b) {
-    Uds29_Req rq; Uds29_Resp rs;
-    if (Uds29Codec::DecodeRequest(b.data(), b.size(), rq)) {
-        std::printf("request sub=0x%02X comm=0x%02X eval=0x%04X cert=%zuB challenge=%zuB pown=%zuB eph=%zuB addl=%zuB\n",
-                    rq.sub, rq.comm, rq.eval_id, rq.cert.size(), rq.challenge.size(), rq.pown.size(), rq.eph.size(), rq.addl.size());
-    } else if (Uds29Codec::DecodeResponse(b.data(), b.size(), rs)) {
-        if (rs.neg) std::printf("negative response nrc=0x%02X (%s)\n", rs.nrc, Uds29Codec::NrcToString(rs.nrc));
-        else std::printf("positive response sub=0x%02X ret=0x%02X (%s) cert=%zuB challenge=%zuB pown=%zuB eph=%zuB session_key=%zuB\n",
-                         rs.sub, rs.ret, Uds29Codec::ReturnParamToString(rs.ret), rs.cert.size(), rs.challenge.size(),
-                         rs.pown.size(), rs.eph.size(), rs.session_key.size());
-    } else std::puts("[ERR] not a valid SID 0x29 request or response");
+    static Uds29_Req rq; static Uds29_Resp rs; /* large structs: keep off the stack */
+    if (Uds29_Codec_DecodeRequest(b.data(), b.size(), &rq)) {
+        std::printf("request sub=0x%02X comm=0x%02X eval=0x%04X cert=%uB challenge=%uB pown=%uB eph=%uB addl=%uB\n",
+                    rq.sub, rq.comm, rq.eval_id, rq.cert_len, rq.challenge_len, rq.pown_len, rq.eph_len, rq.addl_len);
+    } else if (Uds29_Codec_DecodeResponse(b.data(), b.size(), &rs)) {
+        if (rs.neg) std::printf("negative response nrc=0x%02X (%s)\n", rs.nrc, Uds29_Codec_NrcToString(rs.nrc));
+        else std::printf("positive response sub=0x%02X ret=0x%02X (%s) cert=%uB challenge=%uB pown=%uB eph=%uB session_key=%uB\n",
+                         rs.sub, rs.ret, Uds29_Codec_ReturnParamToString(rs.ret), rs.cert_len, rs.challenge_len,
+                         rs.pown_len, rs.eph_len, rs.session_key_len);
+    } else std::puts("[ERR] not a valid SID 0x29 request or response (or a field exceeds the UDS29_MAX_* buffer sizes)");
 }
 
 static void OnEvent(const Uds29_EventType* e) {
@@ -130,7 +130,8 @@ int main() {
             Uds29_Bytes b;
             if (!ParseHex(a + rest, b)) { std::puts("[ERR] bad hex"); continue; }
             if (cmd == "decode") { Decode(b); continue; }
-            uint8_t rx[4096]; uint16_t n = sizeof rx;
+            if (b.size() > UDS29_MAX_MSG_LEN) { std::puts("[ERR] message longer than UDS29_MAX_MSG_LEN"); continue; }
+            uint8_t rx[UDS29_MAX_MSG_LEN]; uint16_t n = sizeof rx;
             Std_ReturnType r = Uds29_SendRaw(b.data(), (uint16_t)b.size(), rx, &n);
             if (r != E_OK) { std::printf("[SEND] failed (0x%02X)\n", r); continue; }
             std::printf("RX: %s\n", Hex(rx, n).c_str());
@@ -157,7 +158,7 @@ int main() {
                         pki_ok ? "loaded" : "not loaded", fault.c_str(), Uds29_GetLogCount());
         else if (cmd == "log") {
             for (uint32_t i = 0; i < Uds29_GetLogCount(); i++) {
-                Uds29_DirectionType d; uint8_t buf[4096]; uint16_t n;
+                Uds29_DirectionType d; uint8_t buf[UDS29_MAX_MSG_LEN]; uint16_t n;
                 if (Uds29_GetLogEntry(i, &d, buf, sizeof buf, &n) == E_OK)
                     std::printf("%3u %s %s\n", i, d == UDS29_DIR_TX ? "TX" : "RX", Hex(buf, n).c_str());
             }

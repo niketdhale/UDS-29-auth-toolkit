@@ -1,37 +1,55 @@
 #pragma once
 #include "Uds29_Types.h"
-#include <cstddef>
-#include <vector>
+#include "Uds29_Cfg.h"
+#include <stddef.h>
 
-typedef std::vector<uint8_t> Uds29_Bytes;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/* Union of all request fields; which ones are used depends on `sub`. */
-struct Uds29_Req {
-    uint8_t     sub = 0;
-    uint8_t     comm = 0;                       /* communicationConfiguration */
-    uint16_t    eval_id = 0;                    /* certificateEvaluationId */
-    uint8_t     alg[UDS29_ALGORITHM_INDICATOR_LEN] = {};
-    Uds29_Bytes cert, challenge, pown, eph, addl;
-};
+/* Union of all request fields; which ones are used depends on `sub`. Variable fields are fixed buffers
+   with an explicit length (<= the buffer size). */
+typedef struct {
+    uint8_t  sub;
+    uint8_t  comm;                              /* communicationConfiguration */
+    uint16_t eval_id;                           /* certificateEvaluationId */
+    uint8_t  alg[UDS29_ALGORITHM_INDICATOR_LEN];
+    uint16_t cert_len, challenge_len, pown_len, eph_len, addl_len;
+    uint8_t  cert[UDS29_MAX_CERT_LEN];
+    uint8_t  challenge[UDS29_MAX_CHALLENGE_LEN];
+    uint8_t  pown[UDS29_MAX_SIG_LEN];
+    uint8_t  eph[UDS29_MAX_SIG_LEN];
+    uint8_t  addl[UDS29_MAX_CHALLENGE_LEN];
+} Uds29_Req;
 
 /* Union of all response fields. neg => 7F 29 nrc. */
-struct Uds29_Resp {
-    bool        neg = false;
-    uint8_t     nrc = 0;
-    uint8_t     sub = 0;
-    uint8_t     ret = 0;                        /* authenticationReturnParameter */
-    uint8_t     alg[UDS29_ALGORITHM_INDICATOR_LEN] = {};
-    Uds29_Bytes cert, challenge, pown, eph, session_key, addl;
-};
+typedef struct {
+    bool     neg;
+    uint8_t  nrc;
+    uint8_t  sub;
+    uint8_t  ret;                               /* authenticationReturnParameter */
+    uint8_t  alg[UDS29_ALGORITHM_INDICATOR_LEN];
+    uint16_t cert_len, challenge_len, pown_len, eph_len, session_key_len, addl_len;
+    uint8_t  cert[UDS29_MAX_CERT_LEN];
+    uint8_t  challenge[UDS29_MAX_CHALLENGE_LEN];
+    uint8_t  pown[UDS29_MAX_SIG_LEN];
+    uint8_t  eph[UDS29_MAX_SIG_LEN];
+    uint8_t  session_key[UDS29_MAX_SIG_LEN];
+    uint8_t  addl[UDS29_MAX_CHALLENGE_LEN];
+} Uds29_Resp;
 
-namespace Uds29Codec {
-/* Encode returns empty on failure (bad sub-function, field > 65535 bytes). */
-Uds29_Bytes EncodeRequest(const Uds29_Req& r);
-Uds29_Bytes EncodeResponse(const Uds29_Resp& r);
-/* Decode returns false on wrong SID, truncation, trailing bytes or bad sub-function. */
-bool DecodeRequest(const uint8_t* d, size_t n, Uds29_Req& r);
-bool DecodeResponse(const uint8_t* d, size_t n, Uds29_Resp& r);
+/* Encode return the message length, 0 on failure (bad sub-function, a field length above its buffer,
+   or the message not fitting `cap`). */
+uint16_t Uds29_Codec_EncodeRequest(const Uds29_Req* r, uint8_t* out, uint16_t cap);
+uint16_t Uds29_Codec_EncodeResponse(const Uds29_Resp* r, uint8_t* out, uint16_t cap);
+/* Decode returns false (and zeroes *r) on wrong SID, truncation, trailing bytes, bad sub-function
+   or a field longer than its buffer. */
+bool Uds29_Codec_DecodeRequest(const uint8_t* d, size_t n, Uds29_Req* r);
+bool Uds29_Codec_DecodeResponse(const uint8_t* d, size_t n, Uds29_Resp* r);
 
-const char* NrcToString(uint8_t nrc);
-const char* ReturnParamToString(uint8_t ret);
+const char* Uds29_Codec_NrcToString(uint8_t nrc);
+const char* Uds29_Codec_ReturnParamToString(uint8_t ret);
+
+#ifdef __cplusplus
 }
+#endif

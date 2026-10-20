@@ -1,0 +1,45 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: openssl
+            flags: ""
+          - name: mbedtls
+            flags: "-DUDS29_CRYPTO=MBEDTLS"
+          - name: freertos-compile-check
+            flags: "-DUDS29_FREERTOS_COMPILE_CHECK=ON"
+          - name: shared
+            flags: "-DBUILD_SHARED_LIBS=ON"
+          - name: idsm
+            flags: "-DUDS29_ENABLE_IDSM=ON -DIDSM_TOOLKIT_DIR=${{ github.workspace }}/autosar-idsm-toolkit"
+            idsm: true
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: uds29
+      - uses: actions/checkout@v4
+        if: matrix.idsm
+        with:
+          repository: niketdhale/autosar-idsm-toolkit
+          path: autosar-idsm-toolkit
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - run: cmake -S uds29 -B build ${{ matrix.flags }}
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+
+  install-consumer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - run: cmake -S . -B build && cmake --build build -j
+      - run: cmake --install build --prefix "$RUNNER_TEMP/prefix"
+      - run: cmake -S examples/consumer -B consumer-build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/prefix"
+      - run: cmake --build consumer-build && ./consumer-build/consumer
