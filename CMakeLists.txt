@@ -31,11 +31,6 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 include(GoogleTest)
-<<<<<<< HEAD
-foreach(t test_codec test_pki test_session)
-    add_executable(${t} tests/${t}.cpp)
-    target_link_libraries(${t} PRIVATE uds29 GTest::gtest_main)
-=======
 add_executable(uds29_cli apps/uds29_cli/main.cpp)
 target_link_libraries(uds29_cli PRIVATE uds29)
 target_compile_options(uds29_cli PRIVATE -Wall -Wextra -Wpedantic)
@@ -63,7 +58,6 @@ foreach(t ${UDS29_TESTS})
     if(t STREQUAL test_idsm_bridge)
         target_link_libraries(${t} PRIVATE uds29_idsm)
     endif()
->>>>>>> UDS-29-auth-toolkit-part2
     target_compile_options(${t} PRIVATE -Wall -Wextra)
     gtest_discover_tests(${t})
 endforeach()
