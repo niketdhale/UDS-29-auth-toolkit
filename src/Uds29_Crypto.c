@@ -86,3 +86,9 @@ Std_ReturnType Uds29_Crypto_GetExtension(const uint8_t* cert_der, uint16_t cert_
     *out_len = 0;
     return o->get_extension(o->ctx, cert_der, cert_len, oid_der, oid_len, out, cap, out_len);
 }
+
+Std_ReturnType Uds29_Crypto_Sha256(const uint8_t* data, uint16_t len, uint8_t out[32]) {
+    const Uds29_CryptoOpsType* o = Uds29_GetCryptoOps();
+    if (!o || !o->sha256 || !out || (len && !data)) return E_NOT_OK;
+    return o->sha256(o->ctx, data, len, out);
+}

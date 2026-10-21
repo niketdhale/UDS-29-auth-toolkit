@@ -14,6 +14,8 @@ Std_ReturnType Uds29_SetPki(const Uds29_PkiConfigType* pki) {
     if (!pki) return E_PARAM_POINTER;
     return Uds29_Core_SetPki(pki);
 }
+Std_ReturnType Uds29_SetTimeSource(Uds29_TimeSourceFn fn, void* ctx) { return Uds29_Core_SetTimeSource(fn, ctx); }
+Std_ReturnType Uds29_SetRevokedSerials(const Uds29_Serial* list, uint16_t count) { return Uds29_Core_SetRevokedSerials(list, count); }
 void Uds29_SetEventCallback(Uds29_EventCallback cb) { Uds29_Core_SetEventCallback(cb); }
 Std_ReturnType Uds29_AuthenticateUnidirectional(void) { return Uds29_Core_Authenticate(false); }
 Std_ReturnType Uds29_AuthenticateBidirectional(void)  { return Uds29_Core_Authenticate(true); }

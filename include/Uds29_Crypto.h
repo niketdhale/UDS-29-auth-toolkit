@@ -8,7 +8,14 @@
 extern "C" {
 #endif
 
-typedef enum { UDS29_PKI_OK = 0, UDS29_PKI_PARSE, UDS29_PKI_EXPIRED, UDS29_PKI_CHAIN } Uds29_PkiResult;
+typedef enum {
+    UDS29_PKI_OK = 0, UDS29_PKI_PARSE, UDS29_PKI_EXPIRED, UDS29_PKI_CHAIN,
+    UDS29_PKI_REVOKED,          /* CRL or serial blacklist */
+    UDS29_PKI_POLICY,           /* key usage / EKU / algorithm policy */
+    UDS29_PKI_TIME_UNTRUSTED    /* no trusted time (core only, never returned by a backend) */
+} Uds29_PkiResult;
+/* verify_peer_cert `at`: skip the validity-period checks (certificates and CRLs) altogether. */
+#define UDS29_AT_SKIP_VALIDITY INT64_MIN
 
 /* An "identity" is an opaque backend handle holding the trust anchor, our certificate and our private key
    (for an HSM: key handles). All lengths are bounded by the caller's buffers; never write past a capacity. */
@@ -19,7 +26,9 @@ typedef struct {
        Writes our cert (DER) to cert_der/cert_len. Returns the handle, NULL on any failure (incl. cert > cap). */
     void* (*load_identity)(void* ctx, const Uds29_PkiConfigType* cfg, uint8_t* cert_der, uint16_t cap, uint16_t* cert_len);
     void  (*free_identity)(void* ctx, void* id);
-    /* Chain to the identity's root + validity period. at = 0: now, else unix time to judge validity at. */
+    /* Chain to the identity's root (through the configured intermediates; CRL-checked when CRLs are configured) +
+       validity period. at = 0: now, UDS29_AT_SKIP_VALIDITY: no date checks, else unix time to judge validity at.
+       Revoked by CRL -> UDS29_PKI_REVOKED. */
     Uds29_PkiResult (*verify_peer_cert)(void* ctx, void* id, const uint8_t* der, uint16_t len, int64_t at);
     /* Signs with the identity's key. E_NOT_OK if the signature does not fit sig_cap. */
     Std_ReturnType (*sign)(void* ctx, void* id, const uint8_t* data, uint16_t len,
@@ -33,6 +42,8 @@ typedef struct {
        content (the DER inside the OCTET STRING) to out. E_NOT_OK if absent, malformed or larger than cap. */
     Std_ReturnType (*get_extension)(void* ctx, const uint8_t* cert_der, uint16_t cert_len,
                                     const uint8_t* oid_der, uint8_t oid_len, uint8_t* out, uint16_t cap, uint16_t* out_len);
+    /* OPTIONAL (NULL = not supported; proof-of-ownership formats with certificate hashes then fail). SHA-256 of data. */
+    Std_ReturnType (*sha256)(void* ctx, const uint8_t* data, uint16_t len, uint8_t out[32]);
 } Uds29_CryptoOpsType;
 
 /* Copies *ops (all function pointers required, else E_PARAM_POINTER). NULL restores the built-in backend.
@@ -52,6 +63,8 @@ Std_ReturnType  Uds29_Crypto_Verify(const uint8_t* cert_der, uint16_t cert_len, 
 Std_ReturnType  Uds29_Crypto_Random(uint8_t* out, uint16_t n);
 Std_ReturnType  Uds29_Crypto_GetExtension(const uint8_t* cert_der, uint16_t cert_len, const uint8_t* oid_der, uint8_t oid_len,
                                           uint8_t* out, uint16_t cap, uint16_t* out_len); /* E_NOT_OK if unsupported */
+
+Std_ReturnType  Uds29_Crypto_Sha256(const uint8_t* data, uint16_t len, uint8_t out[32]); /* E_NOT_OK if unsupported */
 
 /* Provided by the selected backend (not built for UDS29_CRYPTO=CUSTOM). */
 const Uds29_CryptoOpsType* Uds29_Crypto_BuiltinOps(void);

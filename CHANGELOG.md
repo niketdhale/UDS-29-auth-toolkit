@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.5.0] - 2026-10-21
+
+### Added
+- **Certificate validation hardening**, all opt-in with the defaults of 0.4 ([docs/certificate-validation.md](docs/certificate-validation.md)):
+  - Intermediate CAs: `Uds29_PkiConfigType.intermediate_paths[]` (`UDS29_MAX_INTERMEDIATES`, default 2); chained through, never trust anchors; a peer presents its leaf only.
+  - Revocation: `crl_paths[]` (OpenSSL `CRL_CHECK` / `CRL_CHECK_ALL`, mbedTLS `ca_crl`; stale CRL fails closed) and serial blacklist `Uds29_SetRevokedSerials` / `Uds29Srv_SetRevokedSerials`. New `UDS29_PKI_REVOKED` -> server NRC 0x52.
+  - `Uds29_CertPolicy` (`policy` in `Uds29_ConfigType` and `Uds29Srv_ConfigType`): keyUsage digitalSignature, required EKU OID, allowed key types (P-256, P-384, Ed25519) and certificate signature algorithms; checked in the core by a DER walk, backend independent. New `UDS29_PKI_POLICY` -> server NRC 0x56.
+  - Trusted time: `Uds29_SetTimeSource` / `Uds29Srv_SetTimeSource`, `time_mode` SYSTEM / HOOK / SKIP_WITH_EVENT, optional monotonic guard. New `UDS29_PKI_TIME_UNTRUSTED` -> NRC 0x50; new event kind `UDS29_EVT_WARNING` ("validity not checked").
+  - Proof-of-ownership data composition `Uds29_PownFormat` (`pown` in both configs): server / client challenge, additional parameter, SHA-256 of own / peer certificate; presets `UDS29_POWN_PRESET_RAW_CHALLENGE` (default) and `UDS29_POWN_PRESET_SERVER_CLIENT_CHALLENGE` (not claimed to be the ISO 14229-1 layout).
+  - Crypto port: optional `sha256` op, `UDS29_AT_SKIP_VALIDITY` for `verify_peer_cert`, `UDS29_PKI_*` results; intermediate / CRL paths in `load_identity`.
+- Sample PKI: sub-CA (`sub_ca.pem`), `tester_subca`, `tester_revoked` with `root_crl.pem`, `sub_ca_crl.pem`, `root_crl_stale.pem`, `tester_p384`, `tester_sha384`, `tester_future`; keyUsage + example EKUs (`.100` tester, `.101` ECU) on all end-entity certificates. **The sample root and all sample certificates were regenerated.**
+- CLI: `pki load ... [--inter f]... [--crl f]...`; `cert inspect` prints serial, key type, signature algorithm, keyUsage, EKU and the chain result against the loaded PKI.
+- `tests/test_validation.cpp`.
+
+### Changed
+- `Uds29_PkiConfigType`, `Uds29_ConfigType` and `Uds29Srv_ConfigType` have new trailing fields (zero = off). Source compatible; positional partial initialisers warn with `-Wmissing-field-initializers` (the in-tree tests and examples build with `-Wno-missing-field-initializers`). `Uds29_CryptoOpsType` has a new trailing `sha256` member (NULL allowed).
+- In HOOK and SKIP time mode the own certificate is not date-checked when the identity loads.
+
+### Known limitations
+- No OCSP; CRLs are read when the identity loads. mbedTLS does not flag an issuer that has no CRL in the list (OpenSSL does when intermediates are used). The proof-of-ownership presets are unverified against the ISO text.
+
 ## [0.4.0] - 2026-10-20
 
 ### Added

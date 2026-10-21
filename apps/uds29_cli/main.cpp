@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 #ifdef UDS29_WITH_IDSM
 #include "Uds29_IdsM.h"
 #include "IdsM.h"
@@ -113,6 +114,55 @@ static std::string Time(const uint8_t* v, size_t n, uint8_t tag) {
     return d.substr(0, 4) + "-" + d.substr(4, 2) + "-" + d.substr(6, 2) + " " + d.substr(8, 2) + ":" + d.substr(10, 2) + ":" + d.substr(12, 2);
 }
 
+/* The PKI of the last `pki sample` / `pki load`: certificates are verified against it (intermediates and CRLs included). */
+struct LoadedPki {
+    bool set = false;
+    Uds29_PkiConfigType cfg{};
+    std::string ca, cert, key;
+    std::vector<std::string> inter, crl;
+    void Bind() {                       /* cfg points into the strings above: call after the strings are final */
+        for (size_t i = 0; i < inter.size(); i++) cfg.intermediate_paths[i] = inter[i].c_str();
+        for (size_t i = 0; i < crl.size(); i++) cfg.crl_paths[i] = crl[i].c_str();
+        cfg.root_ca_path = ca.c_str(); cfg.cert_path = cert.c_str(); cfg.key_path = key.c_str();
+    }
+};
+static LoadedPki g_pki;
+
+static const char* kKu[] = {"digitalSignature", "nonRepudiation", "keyEncipherment", "dataEncipherment", "keyAgreement",
+                            "keyCertSign", "cRLSign", "encipherOnly", "decipherOnly"};
+
+static void InspectPolicyFields(const Uds29_Bytes& c) {
+    Uds29_DerCert d;
+    if (!Uds29_Der_ParseCert(c.data(), c.size(), &d)) return;
+    unsigned kt = Uds29_Der_KeyType(&d), sa = Uds29_Der_SigAlg(&d), ku;
+    std::printf("serial:  %s\n", Hex(d.serial, d.serial_len).c_str());
+    std::printf("key:     %s\n", kt == UDS29_KEY_EC_P256 ? "EC P-256" : kt == UDS29_KEY_EC_P384 ? "EC P-384" : kt == UDS29_KEY_ED25519 ? "Ed25519" : "other / unsupported");
+    std::printf("sig alg: %s\n", sa == UDS29_SIG_ECDSA_SHA256 ? "ecdsa-with-SHA256" : sa == UDS29_SIG_ECDSA_SHA384 ? "ecdsa-with-SHA384"
+                                  : sa == UDS29_SIG_ED25519 ? "Ed25519" : ("other " + Dotted(d.sigalg, d.sigalg_len)).c_str());
+    std::printf("keyUsage:");
+    if (Uds29_Der_KeyUsage(&d, &ku)) { for (unsigned i = 0; i < 9; i++) if (ku & (0x8000u >> i)) std::printf(" %s", kKu[i]); std::puts(""); }
+    else std::puts(" (none)");
+    std::printf("EKU:    ");
+    const uint8_t* l; size_t n;
+    if (Uds29_Der_Eku(&d, &l, &n)) {
+        const uint8_t* v; size_t vl; uint8_t t;
+        for (const uint8_t* q = l; Uds29_Der_Tlv(&q, l + n, &t, &v, &vl); ) std::printf(" %s", Dotted(v, vl).c_str());
+        std::puts("");
+    } else std::puts(" (none)");
+}
+
+static void InspectChain(const Uds29_Bytes& c) {
+    if (!g_pki.set) { std::puts("chain:   (no PKI loaded: pki sample | pki load ...)"); return; }
+    static uint8_t own[UDS29_MAX_CERT_LEN]; uint16_t n = 0;
+    void* id = Uds29_Crypto_LoadIdentity(&g_pki.cfg, "tester", own, sizeof own, &n);
+    if (!id) { std::puts("chain:   (cannot load the loaded PKI as an identity)"); return; }
+    static const char* kR[] = {"OK", "unparsable", "expired / not yet valid", "chain of trust invalid", "REVOKED", "policy", "no trusted time"};
+    Uds29_PkiResult r = Uds29_Crypto_VerifyPeer(id, c.data(), (uint16_t)c.size(), 0);
+    std::printf("chain:   %s (root %s, %zu intermediate(s), %zu CRL(s))\n", kR[r], g_pki.ca.empty() ? "sample" : g_pki.ca.c_str(),
+                g_pki.inter.size(), g_pki.crl.size());
+    Uds29_Crypto_FreeIdentity(id);
+}
+
 static void InspectCert(const Uds29_Bytes& c) {
     const uint8_t *p = c.data(), *end = p + c.size(), *v;
     uint8_t t; size_t l;
@@ -137,6 +187,8 @@ static void InspectCert(const Uds29_Bytes& c) {
     }
     if (!ok) { std::puts("[ERR] not a valid X.509 certificate"); return; }
     std::printf("subject: %s\nissuer:  %s\nvalid:   %s .. %s UTC\n", subject.c_str(), issuer.c_str(), nb.c_str(), na.c_str());
+    InspectPolicyFields(c);
+    InspectChain(c);
     Uds29_Authz a;
     if (Uds29_Authz_FromCert(&kExampleProfile, c.data(), (uint16_t)c.size(), &a) != E_OK) {
         std::puts("authz:   MALFORMED value for the example profile");
@@ -167,6 +219,7 @@ static void CertCommand(const std::string& a, const std::string& rest) {
 
 static void OnEvent(const Uds29_EventType* e) {
     if (e->kind == UDS29_EVT_STATE_CHANGE) std::printf("  [event] state -> %s\n", kStates[e->state]);
+    else if (e->kind == UDS29_EVT_WARNING) std::printf("  [event] WARNING sub=0x%02X %s\n", e->sub_function, e->description);
     else std::printf("  [event] FAILURE sub=0x%02X nrc=0x%02X %s\n", e->sub_function, e->nrc, e->description);
 #ifdef UDS29_WITH_IDSM
     Uds29_IdsM_OnEvent(e);
@@ -180,7 +233,7 @@ static void OnDem(const IdsM_EventReportType* r) { g_dem++; g_last_sev = r->seve
 #endif
 
 static void Help() {
-    std::puts("Commands: help, pki sample | pki load <ca> <cert> <key> [der],\n"
+    std::puts("Commands: help, pki sample | pki load <ca> <cert> <key> [der] [--inter f]... [--crl f]...,\n"
               "          auth uni|bi, deauth, send <hex>, decode <hex>, cert inspect <file> [der],\n"
               "          inject <none|expired|badsig|mismatch|wrongfmt|nrc <hex>>,\n"
               "          status, log, clear"
@@ -291,17 +344,27 @@ int main(int argc, char** argv) {
         if (cmd == "quit") break;
         else if (cmd == "help") Help();
         else if (cmd == "pki") {
-            Uds29_PkiConfigType p{};
-            std::string ca, crt, key, fmt;
-            if (a == "sample") p.mode = UDS29_PKI_SAMPLE;
+            LoadedPki np;
+            if (a == "sample") np.cfg.mode = UDS29_PKI_SAMPLE;
             else if (a == "load") {
-                std::istringstream r(rest); r >> crt >> key >> fmt;
-                ca = crt; crt = key; key = fmt; fmt.clear(); r >> fmt;
-                p.mode = UDS29_PKI_USER; p.root_ca_path = ca.c_str(); p.cert_path = crt.c_str();
-                p.key_path = key.c_str(); p.format = fmt == "der" ? UDS29_PKI_FORMAT_DER : UDS29_PKI_FORMAT_PEM;
-            } else { std::puts("[ERR] pki sample | pki load <ca> <cert> <key> [der]"); continue; }
+                std::istringstream r(rest);
+                std::string tok, fmt;
+                bool ok = (r >> np.ca >> np.cert >> np.key) ? true : false;
+                while (ok && (r >> tok)) {
+                    if (tok == "der") fmt = tok;
+                    else if (tok == "--inter" || tok == "--crl") {
+                        std::string f;
+                        std::vector<std::string>& v = tok == "--inter" ? np.inter : np.crl;
+                        ok = (r >> f) && v.size() < (tok == "--inter" ? UDS29_MAX_INTERMEDIATES : UDS29_MAX_CRLS);
+                        if (ok) v.push_back(f);
+                    } else ok = false;
+                }
+                if (!ok) { std::puts("[ERR] pki load <ca> <cert> <key> [der] [--inter f]... [--crl f]... (max UDS29_MAX_INTERMEDIATES / UDS29_MAX_CRLS)"); continue; }
+                np.cfg.mode = UDS29_PKI_USER; np.cfg.format = fmt == "der" ? UDS29_PKI_FORMAT_DER : UDS29_PKI_FORMAT_PEM;
+            } else { std::puts("[ERR] pki sample | pki load <ca> <cert> <key> [der] [--inter f]... [--crl f]..."); continue; }
+            g_pki = np; g_pki.Bind(); g_pki.set = true;
             /* ponytail: with `pki load` the sim ECU reuses the same cert/key as its identity */
-            pki_ok = ecu.Init(p) && Uds29_SetPki(&p) == E_OK;
+            pki_ok = ecu.Init(g_pki.cfg) && Uds29_SetPki(&g_pki.cfg) == E_OK;
             std::puts(pki_ok ? "[PKI] loaded" : "[PKI ERR] load failed (bad files, key/cert mismatch or chain invalid)");
         }
         else if (cmd == "auth" && (a == "uni" || a == "bi")) {
