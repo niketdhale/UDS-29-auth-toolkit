@@ -6,12 +6,14 @@
 #include "Uds29_Codec.h"
 #include "Uds29_Crypto.h"
 #include "Uds29_Os.h"
+#include "Uds29_Policy.h"
 #include <string.h>
 #include <time.h>
 
 static struct {
     bool                init;
     Uds29Srv_ConfigType cfg;
+    Uds29_Verifier      vf;                 /* policy, time source, revoked serials for the tester certificate */
     void*               ident;
     uint8_t             cert[UDS29_MAX_CERT_LEN];
     uint16_t            cert_len;
@@ -27,6 +29,9 @@ static struct {
     uint16_t            client_cert_len;
     uint8_t             challenge[UDS29_MAX_CHALLENGE_LEN];
     uint8_t             challenge_len;
+    uint8_t             client_challenge[UDS29_MAX_CHALLENGE_LEN]; /* sent with 0x01/0x02, part of the proof-of-ownership data */
+    uint8_t             client_challenge_len, comm;
+    bool                bidi;
     Uds29Srv_Fault      fault;
     uint8_t             forced_nrc;
     uint32_t          (*clock)(void);       /* test hook, NULL = Uds29_Os_GetTimeMs */
@@ -76,16 +81,35 @@ static Std_ReturnType Neg(uint8_t sub, uint8_t nrc, bool reset, uint8_t* resp, u
     return Out(resp, cap);
 }
 
+/* Data signed for `verifier` (the other party's certificate; see Uds29_PownFormat): by the ECU in the 0x02 response, by the tester in 0x03. */
+static bool Pown(bool ecu_signs, const uint8_t* verifier, uint16_t verifier_len, uint8_t* out, uint16_t cap, uint16_t* n) {
+    Uds29_PownIn in;
+    memset(&in, 0, sizeof in);
+    in.server_ch = g.challenge; in.server_len = g.challenge_len;
+    in.client_ch = g.client_challenge; in.client_len = g.client_challenge_len;
+    in.own_cert = ecu_signs ? g.cert : verifier;   in.own_len = ecu_signs ? g.cert_len : verifier_len;
+    in.peer_cert = ecu_signs ? verifier : g.cert;  in.peer_len = ecu_signs ? verifier_len : g.cert_len;
+    in.comm = g.comm; in.bidi = g.bidi;
+    in.raw = ecu_signs ? g.client_challenge : g.challenge;          /* the challenge issued by the verifier */
+    in.raw_len = ecu_signs ? g.client_challenge_len : g.challenge_len;
+    return Uds29_Pown_Build(&g.cfg.pown, &in, out, cap, n);
+}
+
 static Std_ReturnType VerifyCert(uint8_t* resp, uint16_t* cap) {
     const Uds29_Req* rq = &g.rq;
     if (g.fault == UDS29SRV_FAULT_WRONG_CERT_FORMAT && rq->sub == UDS29_SF_VERIFY_CERT_UNIDIRECTIONAL)
         return Neg(rq->sub, UDS29_NRC_CVF_INVALID_FORMAT, true, resp, cap);
     int64_t at = g.fault == UDS29SRV_FAULT_EXPIRED_CERT ? (int64_t)time(NULL) + 11LL * 365 * 86400 : 0;
-    switch (Uds29_Crypto_VerifyPeer(g.ident, rq->cert, rq->cert_len, at)) {
+    bool skipped;
+    Uds29_PkiResult vr = Uds29_Verifier_Check(&g.vf, g.ident, rq->cert, rq->cert_len, at, &skipped);
+    if (skipped) Emit(UDS29_EVT_WARNING, rq->sub, 0, "validity not checked");
+    switch (vr) {
     case UDS29_PKI_OK: break;
     case UDS29_PKI_PARSE:   return Neg(rq->sub, UDS29_NRC_CVF_INVALID_FORMAT, true, resp, cap);
-    case UDS29_PKI_EXPIRED: return Neg(rq->sub, UDS29_NRC_CVF_INVALID_TIME_PERIOD, true, resp, cap);
-    default:                return Neg(rq->sub, UDS29_NRC_CVF_INVALID_CHAIN_OF_TRUST, true, resp, cap);
+    case UDS29_PKI_EXPIRED:
+    case UDS29_PKI_TIME_UNTRUSTED: return Neg(rq->sub, UDS29_NRC_CVF_INVALID_TIME_PERIOD, true, resp, cap);
+    case UDS29_PKI_POLICY:  return Neg(rq->sub, UDS29_NRC_CVF_INVALID_SCOPE, true, resp, cap);
+    default:                return Neg(rq->sub, UDS29_NRC_CVF_INVALID_CHAIN_OF_TRUST, true, resp, cap); /* CHAIN, REVOKED */
     }
     Uds29_Authz az;
     memset(&az, 0, sizeof az);
@@ -98,6 +122,10 @@ static Std_ReturnType VerifyCert(uint8_t* resp, uint16_t* cap) {
     g.authz = az;
     memcpy(g.client_cert, rq->cert, rq->cert_len);
     g.client_cert_len = rq->cert_len;
+    memcpy(g.client_challenge, rq->challenge, rq->challenge_len);
+    g.client_challenge_len = (uint8_t)rq->challenge_len;
+    g.comm = rq->comm;
+    g.bidi = rq->sub == UDS29_SF_VERIFY_CERT_BIDIRECTIONAL;
     if (Uds29_Crypto_Random(g.challenge, g.challenge_len) != E_OK)
         return Neg(rq->sub, UDS29_NRC_CHALLENGE_CALCULATION_FAILED, true, resp, cap);
 
@@ -107,9 +135,10 @@ static Std_ReturnType VerifyCert(uint8_t* resp, uint16_t* cap) {
     memcpy(g.rs.challenge, g.challenge, g.challenge_len);
     g.rs.challenge_len = g.challenge_len;
     if (rq->sub == UDS29_SF_VERIFY_CERT_BIDIRECTIONAL) {   /* prove the ECU's identity over the client's challenge */
-        uint8_t data[UDS29_MAX_CHALLENGE_LEN + 1];
-        uint16_t n = rq->challenge_len;
-        memcpy(data, rq->challenge, n);
+        uint8_t data[UDS29_POWN_DATA_MAX];
+        uint16_t n;
+        if (!Pown(true, rq->cert, rq->cert_len, data, sizeof data, &n))
+            return Neg(rq->sub, UDS29_NRC_CHALLENGE_CALCULATION_FAILED, true, resp, cap);
         if (g.fault == UDS29SRV_FAULT_CHALLENGE_MISMATCH) data[n++] = 0xFF;
         if (g.fault == UDS29SRV_FAULT_WRONG_CERT_FORMAT) { memcpy(g.rs.cert, "\xDE\xAD\xBE\xEF", 4); g.rs.cert_len = 4; }
         else { memcpy(g.rs.cert, g.cert, g.cert_len); g.rs.cert_len = g.cert_len; }
@@ -125,10 +154,11 @@ static Std_ReturnType VerifyCert(uint8_t* resp, uint16_t* cap) {
 static Std_ReturnType VerifyPown(uint8_t* resp, uint16_t* cap) {
     const Uds29_Req* rq = &g.rq;
     if (g.state != UDS29_STATE_CERT_SENT) return Neg(rq->sub, UDS29_NRC_REQUEST_SEQUENCE_ERROR, false, resp, cap);
-    uint8_t sig[UDS29_MAX_SIG_LEN], exp[UDS29_MAX_CHALLENGE_LEN + 1];
-    uint16_t sn = rq->pown_len, en = g.challenge_len;
+    uint8_t sig[UDS29_MAX_SIG_LEN], exp[UDS29_POWN_DATA_MAX];
+    uint16_t sn = rq->pown_len, en;
     memcpy(sig, rq->pown, sn);
-    memcpy(exp, g.challenge, en);
+    if (!Pown(false, g.client_cert, g.client_cert_len, exp, sizeof exp, &en))
+        return Neg(rq->sub, UDS29_NRC_OWNERSHIP_VERIFICATION_FAILED, true, resp, cap);
     if (g.fault == UDS29SRV_FAULT_BAD_SIGNATURE && sn) sig[sn - 1] ^= 0x01;
     if (g.fault == UDS29SRV_FAULT_CHALLENGE_MISMATCH) exp[en++] = 0xFF;
     if (sn == 0 || Uds29_Crypto_Verify(g.client_cert, g.client_cert_len, exp, en, sig, sn) != E_OK)
@@ -177,9 +207,12 @@ Std_ReturnType Uds29Srv_Init(const Uds29Srv_ConfigType* c) {
     Uds29_Crypto_FreeIdentity(g.ident);
     memset(&g.cfg, 0, sizeof g.cfg);
     g.cfg = *c;
+    g.vf.policy = c->policy;
     g.challenge_len = c->challenge_len ? c->challenge_len : 32;
     if (g.challenge_len > UDS29_MAX_CHALLENGE_LEN) g.challenge_len = UDS29_MAX_CHALLENGE_LEN;
-    g.ident = Uds29_Crypto_LoadIdentity(&c->pki, "ecu", g.cert, sizeof g.cert, &g.cert_len);
+    Uds29_PkiConfigType pc = c->pki;
+    pc.skip_validity_check |= c->policy.time_mode != UDS29_TIME_SYSTEM; /* own certificate: no trusted time either */
+    g.ident = Uds29_Crypto_LoadIdentity(&pc, "ecu", g.cert, sizeof g.cert, &g.cert_len);
     g.init = g.ident != NULL;
     g.state = UDS29_STATE_IDLE;
     memset(&g.authz, 0, sizeof g.authz);
@@ -195,6 +228,7 @@ Std_ReturnType Uds29Srv_DeInit(void) {
     g.state = UDS29_STATE_IDLE;
     memset(&g.authz, 0, sizeof g.authz);
     g.fault = UDS29SRV_FAULT_NONE;
+    memset(&g.vf, 0, sizeof g.vf);
     Uds29_Os_Unlock();
     return E_OK;
 }
@@ -227,6 +261,16 @@ Uds29_StateType Uds29Srv_GetState(void) {
 bool Uds29Srv_IsAuthenticated(void) { return Uds29Srv_GetState() == UDS29_STATE_AUTHENTICATED; }
 
 /* ── access control ── */
+Std_ReturnType Uds29Srv_SetTimeSource(Uds29_TimeSourceFn fn, void* ctx) {
+    Uds29_Os_Lock(); g.vf.time_fn = fn; g.vf.time_ctx = ctx; Uds29_Os_Unlock();
+    return E_OK;
+}
+
+Std_ReturnType Uds29Srv_SetRevokedSerials(const Uds29_Serial* list, uint16_t count) {
+    Uds29_Os_Lock(); g.vf.revoked = count ? list : NULL; g.vf.n_revoked = list ? count : 0; Uds29_Os_Unlock();
+    return E_OK;
+}
+
 void Uds29Srv_SetAuthzParser(Uds29Srv_AuthzParser fn, void* ctx) { Uds29_Os_Lock(); g.parser = fn; g.parser_ctx = ctx; Uds29_Os_Unlock(); }
 
 void Uds29Srv_SetAccessRules(const Uds29Srv_AccessRule* rules, uint16_t count) {

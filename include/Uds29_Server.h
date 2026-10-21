@@ -21,7 +21,16 @@ typedef struct {
                                             to authenticate, or NRC 0x56 */
     uint8_t             deny_nrc;        /* NRC for denied access: 0 = 0x34 authenticationRequired, or e.g. 0x33 */
     bool                deny_unlisted_sid; /* false: a SID without any access rule is allowed; true: denied */
+    Uds29_CertPolicy    policy;          /* applied to the tester certificate; all-zero = chain + validity only */
+    Uds29_PownFormat    pown;            /* signed data of the proofs of ownership; must match the tester's. Default: raw challenge */
 } Uds29Srv_ConfigType;
+
+/* Opt-in certificate validation, see docs/certificate-validation.md. NRCs: certificate revoked (CRL or serial
+   list) / chain invalid 0x52, validity or no trusted time 0x50, key usage / EKU / algorithm policy 0x56, unparsable 0x54.
+   Intermediates and CRLs are part of `pki`. Time source for time_mode HOOK; NULL removes it. */
+Std_ReturnType  Uds29Srv_SetTimeSource(Uds29_TimeSourceFn fn, void* ctx);
+/* Serial blacklist (not copied, must outlive its use; NULL / 0 removes it). A tester certificate with one of these serials -> NRC 0x52. */
+Std_ReturnType  Uds29Srv_SetRevokedSerials(const Uds29_Serial* list, uint16_t count);
 
 /* Loads the identity; E_NOT_OK on bad files, key/cert mismatch, invalid chain or bad challenge_len. */
 Std_ReturnType  Uds29Srv_Init(const Uds29Srv_ConfigType* config);

@@ -17,6 +17,13 @@ Std_ReturnType Uds29_SetTransport(Uds29_TransportFn fn, void* ctx);
 /* Loads the client identity + trust anchor; E_NOT_OK if files are bad, key/cert mismatch or chain invalid. */
 Std_ReturnType Uds29_SetPki(const Uds29_PkiConfigType* pki);
 void           Uds29_SetEventCallback(Uds29_EventCallback cb);
+/* Opt-in certificate validation for the ECU certificate (bidirectional); see Uds29_ConfigType.policy and
+   docs/certificate-validation.md. Set the PKI (intermediates, CRLs) in Uds29_PkiConfigType.
+   Time source for time_mode HOOK (and nothing else); NULL removes it. Call after Uds29_Init. */
+Std_ReturnType Uds29_SetTimeSource(Uds29_TimeSourceFn fn, void* ctx);
+/* Serial blacklist: an ECU certificate with one of these serials -> failure "revoked". list is not copied (must
+   outlive its use); NULL / 0 removes it. */
+Std_ReturnType Uds29_SetRevokedSerials(const Uds29_Serial* list, uint16_t count);
 
 /* 0x01 + 0x03 */
 Std_ReturnType Uds29_AuthenticateUnidirectional(void);

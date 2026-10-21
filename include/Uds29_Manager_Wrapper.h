@@ -12,6 +12,8 @@ Std_ReturnType Uds29_Core_Init(const Uds29_ConfigType* config);
 Std_ReturnType Uds29_Core_DeInit(void);
 Std_ReturnType Uds29_Core_SetTransport(Uds29_TransportFn fn, void* ctx);
 Std_ReturnType Uds29_Core_SetPki(const Uds29_PkiConfigType* pki);
+Std_ReturnType Uds29_Core_SetTimeSource(Uds29_TimeSourceFn fn, void* ctx);
+Std_ReturnType Uds29_Core_SetRevokedSerials(const Uds29_Serial* list, uint16_t count);
 void           Uds29_Core_SetEventCallback(Uds29_EventCallback cb);
 Std_ReturnType Uds29_Core_Authenticate(bool bidirectional);
 Std_ReturnType Uds29_Core_DeAuthenticate(void);

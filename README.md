@@ -23,6 +23,7 @@ certificate format, a simulated ECU with fault injection, an interactive CLI, tw
 - [Architecture](#architecture)
 - [Client vs server](#client-vs-server)
 - [Access control](#access-control)
+- [Certificate validation](#certificate-validation)
 - [Sub-function support](#sub-function-support)
 - [Build options](#build-options)
 - [Documentation](#documentation)
@@ -53,6 +54,7 @@ printf 'pki sample\nauth bi\nquit\n' | ./build/uds29_cli                        
 - ECU side, DCM-style: `Uds29Srv_HandleRequest(req, len, resp, &resp_len)` takes a full request and writes the positive or `7F 29 nrc` response
 - 0x00, 0x01, 0x02, 0x03, 0x08; NRC 0x12 / 0x13 / 0x24 / 0x50-0x58 as the standard prescribes
 - Random challenge, certificate chain and validity check, authentication timeout
+- Opt-in certificate hardening: intermediate CAs, CRL and serial blacklist, key usage / EKU / algorithm policy, trusted-time hook, configurable proof-of-ownership data ([docs/certificate-validation.md](docs/certificate-validation.md))
 - Access control from the client certificate: roles and service / DID / routine allow-lists in an OEM-defined format (extension OID, subject OU or CN, or your own parser), enforced against an ECU rule table with NRC 0x34 ([docs/access-control.md](docs/access-control.md))
 
 **Crypto**
@@ -72,7 +74,7 @@ printf 'pki sample\nauth bi\nquit\n' | ./build/uds29_cli                        
 - Simulated ECU (`Uds29SimEcu`, a thin wrapper over the server) with fault injection: expired cert, bad signature, challenge mismatch, wrong format, forced NRC
 - `uds29_cli`: interactive tester, or `--role server` for hex in / hex out
 - Two-process demos over DoIP (`doip_server_demo`, `doip_client_demo`) and CAN ISO-TP on SocketCAN (`can_server_demo`, `can_client_demo`, with a userspace ISO-TP), `access_control_demo`, GoogleTest suites, CI matrix
-- `uds29_cli cert inspect <file>` prints a certificate's subject, validity and decoded roles / allow-lists
+- `uds29_cli cert inspect <file>` prints a certificate's subject, validity, serial, key type, signature algorithm, keyUsage, EKU, decoded roles / allow-lists and the chain result against the loaded PKI (`pki load ... [--inter f] [--crl f]`)
 
 ## Architecture
 
@@ -134,6 +136,28 @@ if (Uds29Srv_CheckAccess(req, len, &nrc) != E_OK) { /* answer 7F req[0] nrc, 0x3
 narrowed to services 22 and 3E and two DIDs. Full guide, with a worked OEM format and the `openssl` extension config:
 [docs/access-control.md](docs/access-control.md). The OID arc used by the samples (`1.3.6.1.4.1.99999.29.x`) is an example, not a registered number.
 
+## Certificate validation
+
+The peer certificate (the tester's on the server, the ECU's on the client) passes one pipeline. The defaults are the 0.4
+behaviour (chain + validity at the system time); everything else is opt-in:
+
+| Check | Config | Server NRC |
+| --- | --- | --- |
+| Parse / chain to the root (CA constraints, pathLen) | `root_ca_path` | 0x54 / 0x52 |
+| Through intermediate CAs (leaf-only peers) | `intermediate_paths[]` (`UDS29_MAX_INTERMEDIATES`) | 0x52 |
+| Validity period | `policy.time_mode` SYSTEM / HOOK / SKIP_WITH_EVENT | 0x50 |
+| Trusted time, never goes back | `Uds29(Srv)_SetTimeSource`, `time_monotonic_guard` | 0x50 |
+| CRL (incl. `nextUpdate`) | `crl_paths[]` | 0x52 |
+| Serial blacklist | `Uds29(Srv)_SetRevokedSerials` | 0x52 |
+| keyUsage digitalSignature, EKU | `policy.require_key_usage_digital_signature`, `required_eku_oid` | 0x56 |
+| Key type, signature algorithm | `policy.allowed_key_types`, `allowed_sig_algs` | 0x56 |
+| Proof-of-ownership data | `pown` (raw challenge, or server/client challenge, additional parameter, certificate hashes) | 0x58 |
+
+Table of every check, NRC reasoning, recommended production profile and limits (no OCSP):
+[docs/certificate-validation.md](docs/certificate-validation.md). The server and client configs gained trailing fields
+(`policy`, `pown`; the PKI config `intermediate_paths`, `crl_paths`): initialise with `{0}` / `{}` / designated initialisers
+to avoid `-Wmissing-field-initializers`.
+
 ## Sub-function support
 
 | Sub-function | Client flow | Server | Codec |
@@ -161,7 +185,7 @@ The codec encodes and decodes all of them (`Uds29_Codec_*`), so you can build th
 | `UDS29_ENABLE_IDSM` | `OFF` | Build the IDSM bridge; `IDSM_TOOLKIT_DIR` points at the IDSM toolkit checkout |
 | `UDS29_FREERTOS_COMPILE_CHECK` | `OFF` | Fetch FreeRTOS-Kernel V11.1.0 and compile the FreeRTOS OS port and `examples/freertos_task.c` against it (no link, no run) |
 | `BUILD_SHARED_LIBS` | `OFF` | Build `libuds29` as a shared library |
-| `UDS29_MAX_CERT_LEN` / `_CHALLENGE_LEN` / `_SIG_LEN` / `_MAX_MSG_LEN` / `UDS29_LOG_DEPTH` / `UDS29_MAX_ALLOW` | 1024 / 64 / 128 / 1300 / 32 / 32 | Static buffer sizes and the length of each certificate allow-list (also settable with `-D` for non-CMake builds; all translation units must agree) |
+| `UDS29_MAX_CERT_LEN` / `_CHALLENGE_LEN` / `_SIG_LEN` / `_MAX_MSG_LEN` / `UDS29_LOG_DEPTH` / `UDS29_MAX_ALLOW` / `UDS29_MAX_INTERMEDIATES` | 1024 / 64 / 128 / 1300 / 32 / 32 / 2 | Static buffer sizes and the length of each certificate allow-list (also settable with `-D` for non-CMake builds; all translation units must agree); intermediate CAs per PKI config |
 | `UDS29_P2_TIMEOUT_MS` | 5000 | Client non-blocking API: per-response timeout (`-D` / `Uds29_Cfg.h`) |
 
 Requires CMake 3.16+, a C11/C++17 compiler, OpenSSL dev files (default backend); GoogleTest is fetched. There is no
@@ -174,6 +198,7 @@ Windows build.
 | [docs/linux.md](docs/linux.md) | build, install, `find_package`, run client / server / DoIP demo, troubleshooting (tested) |
 | [docs/transports.md](docs/transports.md) | plugging in a transport; DoIP (ISO 13400-2) and CAN ISO-TP (ISO 15765-2) demos, `vcan` setup, own adapters |
 | [docs/access-control.md](docs/access-control.md) | roles and allow-lists in certificates, defining an OEM certificate format, access rules, NRC 0x34, CLI, demo |
+| [docs/certificate-validation.md](docs/certificate-validation.md) | every certificate check with config and NRC, intermediates, CRL / blacklist, EKU and algorithm policy, trusted time, proof-of-ownership data, production profile, limits |
 | [docs/qnx.md](docs/qnx.md) | QNX SDP cross build (untested: no SDK here) |
 | [docs/freertos.md](docs/freertos.md) | FreeRTOS integration (compile-checked only, not run on a target) |
 | [docs/client-server.md](docs/client-server.md) | roles, sequence diagrams, `UDS29_ROLE`, API tables |
@@ -188,15 +213,15 @@ Install in one line: `cmake --install build --prefix /opt/uds29`, then `find_pac
 include/   Uds29.h (client API)  Uds29_Server.h (server API)  Uds29_Types.h  Uds29_Cfg.h  Uds29_Transport.h  Uds29_Codec.h
            Uds29_Crypto.h  Uds29_Os.h  Uds29_Authz.h              (installed according to UDS29_ROLE)
            Uds29_Manager_Wrapper.h  Uds29_ServerTest.h  Uds29_SimEcu.h  Uds29_SimEcu_C.h  Uds29_IdsM.h   (not installed)
-src/       Uds29.c  Uds29_Manager.c (client)  Uds29_Server.c  Uds29_Authz.c  Uds29_Der.h  Uds29_Codec.c  Uds29_Crypto.c  crypto/ (OpenSsl, MbedTls)
+src/       Uds29.c  Uds29_Manager.c (client)  Uds29_Server.c  Uds29_Authz.c  Uds29_Der.h  Uds29_Policy.c/.h  Uds29_Codec.c  Uds29_Crypto.c  crypto/ (OpenSsl, MbedTls)
            os/ (Posix, FreeRtos)  Uds29_SimEcu.cpp (host test double)  Uds29_IdsM.c (optional)
 apps/uds29_cli/main.cpp
 examples/  linux_app.c  access_control_demo.c  access_example.h  freertos_task.c  consumer/ (find_package demo)
            transports/ (doip, isotp, can_socketcan, can_loopback, doip_*_demo.c, can_*_demo.c)
 docs/      linux.md  qnx.md  freertos.md  client-server.md  transports.md  access-control.md
 cmake/     uds29Config.cmake.in  uds29.pc.in  toolchains/ (qnx-aarch64le, arm-none-eabi)
-tests/     test_codec  test_pki  test_session  test_limits  test_async  test_server  test_authz  test_isotp  test_idsm_bridge (IDSM only)  run_doip_demo.sh  run_can_demo.sh
-certs/sample/  sample PKI + gen_sample_certs.sh + oem_profile.cnf (example roles / allow-list extensions)
+tests/     test_codec  test_pki  test_session  test_limits  test_async  test_server  test_authz  test_isotp  test_validation  test_idsm_bridge (IDSM only)  run_doip_demo.sh  run_can_demo.sh
+certs/sample/  sample PKI (root, sub-CA, testers, CRLs) + gen_sample_certs.sh + oem_profile.cnf (example roles / allow-list / EKU extensions)
 ```
 </details>
 
@@ -294,12 +319,12 @@ The hooks live in `include/Uds29_ServerTest.h` (not installed) and are meant for
 
 | Command                                                       |                                                                 |
 | ------------------------------------------------------------- | --------------------------------------------------------------- |
-| `pki sample` / `pki load <ca> <cert> <key> [der]`             | Load PKI (required before `auth`)                               |
+| `pki sample` / `pki load <ca> <cert> <key> [der] [--inter f]... [--crl f]...` | Load PKI (required before `auth`), optional intermediates / CRLs |
 | `auth uni` / `auth bi`, `deauth`                              | Run a flow                                                      |
 | `send <hex>`, `decode <hex>`                                  | Raw request via the ECU / decode a request or response          |
 | `inject none\|expired\|badsig\|mismatch\|wrongfmt\|nrc <hex>` | Simulated ECU fault                                             |
 | `status`, `log`, `clear`, `help`, `quit`                      |                                                                 |
-| `cert inspect <file> [der]`                                   | Subject, issuer, validity and the roles / allow-lists decoded with the example profile |
+| `cert inspect <file> [der]`                                   | Subject, issuer, validity, serial, key, signature algorithm, keyUsage, EKU, roles / allow-lists (example profile) and the chain result (incl. CRL) against the loaded PKI |
 | `idsm status`                                                 | Only when built with IDSM: pending/forwarded counts, last event |
 
 ```
@@ -377,10 +402,10 @@ The OS port adds a mutex. Code size depends on the backend and compiler; it was 
 
 - Fixed buffers: certificates up to `UDS29_MAX_CERT_LEN` (1024), challenges `UDS29_MAX_CHALLENGE_LEN` (64), signatures `UDS29_MAX_SIG_LEN` (128), messages `UDS29_MAX_MSG_LEN` (1300). Larger input is refused (`E_NOT_OK` on the client, NRC 0x13 from the server). The client exchange log keeps the last `UDS29_LOG_DEPTH` (32) entries.
 - One client and one server instance per process (all state is global); a process may host both. One request in flight; the blocking and non-blocking client flows cannot run at the same time. The server does not track separate tester connections: authentication state is per ECU, not per transport channel.
-- Server: sub-functions 0x04-0x07 are answered with NRC 0x12; no certificate revocation; the auth timeout is measured from the last state change, not from activity. Access control: one rule table per ECU, no per-session-type rules; your dispatcher must call `Uds29Srv_CheckAccess` for every service.
+- Server: sub-functions 0x04-0x07 are answered with NRC 0x12; no OCSP, CRLs are read when the identity loads (no reload, no fetching); the auth timeout is measured from the last state change, not from activity. Access control: one rule table per ECU, no per-session-type rules; your dispatcher must call `Uds29Srv_CheckAccess` for every service.
 - Client and server share one OS lock: in one process, a blocking client call waits out its transport timeout if the server answers from another thread (use the non-blocking client API, see [docs/transports.md](docs/transports.md)).
 - Client non-blocking timeout granularity is the `MainFunction` period; `Uds29_Os_GetTimeMs` wraps after ~49 days (handled by unsigned subtraction). A stray or oversize `RxIndication` is rejected, not treated as a failure. No retry.
-- The proof-of-ownership signature covers the raw challenge only, not the full ISO 14229 data structure. The ephemeral public key field is sent empty; no session key is derived, so no secured communication follows authentication.
+- The proof-of-ownership signature covers the raw challenge by default; other compositions (`pown`, presets) are configurable but **not verified against the ISO 14229-1 byte layout** - configure to match your OEM / ISO spec and verify against a reference tester. The ephemeral public key field is sent empty; no session key is derived, so no secured communication follows authentication.
 - Ed25519 PKI is OpenSSL-only; the mbedTLS backend returns `E_NOT_OK`.
 - Tested on Linux only (GCC, OpenSSL and mbedTLS). The FreeRTOS port and example are compile-checked against the kernel headers (posix port), never run on a target. The QNX and arm-none-eabi toolchain files and the DoIP demo on QNX are untested here. No Windows support.
 - The DoIP and CAN demos are demonstration transports. DoIP: TCP only (no UDP discovery), no TLS, one tester at a time, loopback by default; compatibility with other DoIP entities (for example niketdhale/DOIP_ECU_Simulator) is by the standard and was not tested. CAN: a userspace ISO-TP (classic CAN, 4095 bytes); the SocketCAN demos compile but were **not run** (the development machine has no CAN support in its kernel); only the ISO-TP code over an in-process loopback driver is tested.
