@@ -206,12 +206,12 @@ TEST_F(Val, IntermediateEndToEnd) {
     EXPECT_EQ(NrcOf(g_cev), 0x52) << "verifier without the intermediate: invalid chain of trust";
 }
 
-TEST_F(Val, CrlRevokedTesterGetsNrc52) {
+TEST_F(Val, CrlRevokedTesterGetsNrc57) {
     cpki = Sample("tester_revoked");
     spki.crl = {S + "root_crl.pem"};
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x52);
-    EXPECT_EQ(NrcOf(g_cev), 0x52);
+    EXPECT_EQ(NrcOf(g_sev), 0x57);
+    EXPECT_EQ(NrcOf(g_cev), 0x57);
     EXPECT_EQ(Uds29_GetState(), UDS29_STATE_FAILED);
 }
 
@@ -224,8 +224,8 @@ TEST_F(Val, SerialBlacklistServer) {
     Bytes ser = SerialOf(CertOf("tester"));
     srev = {Uds29_Serial{ser.data(), uint8_t(ser.size())}};
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x52);
-    EXPECT_EQ(NrcOf(g_cev), 0x52);
+    EXPECT_EQ(NrcOf(g_sev), 0x57);
+    EXPECT_EQ(NrcOf(g_cev), 0x57);
 }
 
 TEST_F(Val, SerialBlacklistLeadingZerosAndOthers) {
@@ -237,7 +237,7 @@ TEST_F(Val, SerialBlacklistLeadingZerosAndOthers) {
     Uds29_DeInit(); Uds29Srv_DeInit();
     srev = {Uds29_Serial{ser.data(), uint8_t(ser.size())}};
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x52);
+    EXPECT_EQ(NrcOf(g_sev), 0x57);
 }
 
 TEST_F(Val, SerialBlacklistClientFailsWithEvent) {
@@ -261,8 +261,8 @@ TEST_F(Val, EcuCertificateRejectedAsTester) {
     cpki = Sample("ecu");
     scfg.policy.required_eku_oid = kEkuTester; scfg.policy.required_eku_oid_len = sizeof kEkuTester;
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x56);
-    EXPECT_EQ(NrcOf(g_cev), 0x56);
+    EXPECT_EQ(NrcOf(g_sev), 0x53);
+    EXPECT_EQ(NrcOf(g_cev), 0x53);
 }
 
 TEST_F(Val, ClientRejectsTesterCertificateAsEcu) {
@@ -285,12 +285,12 @@ TEST_F(Val, MissingKeyUsageAndEkuExtensions) {
     Uds29_DeInit(); Uds29Srv_DeInit();
     scfg.policy.require_key_usage_digital_signature = true;
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x56);
+    EXPECT_EQ(NrcOf(g_sev), 0x53);
     Uds29_DeInit(); Uds29Srv_DeInit();
     scfg.policy.require_key_usage_digital_signature = false;
     scfg.policy.required_eku_oid = kEkuTester; scfg.policy.required_eku_oid_len = sizeof kEkuTester;
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x56);
+    EXPECT_EQ(NrcOf(g_sev), 0x53);
     fs::remove_all(d);
 }
 
@@ -301,7 +301,7 @@ TEST_F(Val, KeyTypePolicy) {
     Uds29_DeInit(); Uds29Srv_DeInit();
     scfg.policy.allowed_key_types = UDS29_KEY_EC_P256;
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x56);
+    EXPECT_EQ(NrcOf(g_sev), 0x53);
     Uds29_DeInit(); Uds29Srv_DeInit();
     scfg.policy.allowed_key_types = UDS29_KEY_EC_P256 | UDS29_KEY_EC_P384;
     EXPECT_TRUE(Auth(false)) << WhyOf(g_cev);
@@ -309,14 +309,14 @@ TEST_F(Val, KeyTypePolicy) {
     cpki = Sample("tester");
     scfg.policy.allowed_key_types = UDS29_KEY_ED25519;
     EXPECT_FALSE(Auth(false)) << "P-256 key not in the list";
-    EXPECT_EQ(NrcOf(g_sev), 0x56);
+    EXPECT_EQ(NrcOf(g_sev), 0x53);
 }
 
 TEST_F(Val, SignatureAlgorithmPolicy) {
     cpki = Sample("tester_sha384");
     scfg.policy.allowed_sig_algs = UDS29_SIG_ECDSA_SHA256;
     EXPECT_FALSE(Auth(false));
-    EXPECT_EQ(NrcOf(g_sev), 0x56);
+    EXPECT_EQ(NrcOf(g_sev), 0x53);
     Uds29_DeInit(); Uds29Srv_DeInit();
     scfg.policy.allowed_sig_algs = UDS29_SIG_ECDSA_SHA256 | UDS29_SIG_ECDSA_SHA384;
     EXPECT_TRUE(Auth(false)) << WhyOf(g_cev);
@@ -438,4 +438,53 @@ TEST_F(Val, PownUnidirectionalPresetEqualsRaw) {
     Uds29_PownFormat f = UDS29_POWN_PRESET_SERVER_CLIENT_CHALLENGE;
     ccfg.pown = f;                                       /* unidirectional: server challenge only, as raw */
     EXPECT_TRUE(Auth(false)) << WhyOf(g_cev);
+}
+
+/* ── NRC mapping: detailed (default) vs collapsed (0.5.0) ── */
+TEST_F(Val, CollapseRestoresOldNrcs) {
+    cpki = Sample("tester_revoked");
+    spki.crl = {S + "root_crl.pem"};
+    scfg.nrc_collapse = true;
+    EXPECT_FALSE(Auth(false));
+    EXPECT_EQ(NrcOf(g_sev), 0x52) << "revoked, collapsed";
+    Uds29_DeInit(); Uds29Srv_DeInit();
+    cpki = Sample("ecu");
+    spki.crl.clear();
+    scfg.policy.required_eku_oid = kEkuTester; scfg.policy.required_eku_oid_len = sizeof kEkuTester;
+    EXPECT_FALSE(Auth(false));
+    EXPECT_EQ(NrcOf(g_sev), 0x56) << "EKU, collapsed";
+    Uds29_DeInit(); Uds29Srv_DeInit();
+    scfg.nrc_collapse = false;
+    EXPECT_FALSE(Auth(false));
+    EXPECT_EQ(NrcOf(g_sev), 0x53) << "EKU, detailed";
+}
+
+/* tester certificate with the last signature byte flipped: issuer still matches the root */
+TEST_F(Val, TamperedSignature) {
+    Bytes der = CertOf("tester");
+    der.back() ^= 0x01; /* last byte of the signatureValue BIT STRING (ECDSA s) */
+    /* a client cannot load such a certificate, so the request is built by hand */
+    scfg.pki = spki.Cfg();
+    ASSERT_EQ(Uds29Srv_Init(&scfg), E_OK);
+    Uds29Srv_SetEventCallback(SEv);
+    static Uds29_Req r;
+    r = Uds29_Req{}; r.sub = UDS29_SF_VERIFY_CERT_UNIDIRECTIONAL; r.cert_len = uint16_t(der.size());
+    std::copy(der.begin(), der.end(), r.cert);
+    r.challenge_len = 32;
+    uint8_t b[UDS29_MAX_MSG_LEN], rx[UDS29_MAX_MSG_LEN];
+    uint16_t n = Uds29_Codec_EncodeRequest(&r, b, sizeof b), rn = sizeof rx;
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(Uds29Srv_HandleRequest(b, n, rx, &rn), E_OK);
+    ASSERT_EQ(rn, 3);
+#ifdef UDS29_CRYPTO_MBEDTLS
+    EXPECT_EQ(rx[2], 0x52) << "mbedTLS cannot tell a bad signature from an untrusted chain";
+#else
+    EXPECT_EQ(rx[2], 0x51);
+    Uds29Srv_DeInit();
+    scfg.nrc_collapse = true;
+    ASSERT_EQ(Uds29Srv_Init(&scfg), E_OK);
+    rn = sizeof rx;
+    ASSERT_EQ(Uds29Srv_HandleRequest(b, n, rx, &rn), E_OK);
+    EXPECT_EQ(rx[2], 0x52);
+#endif
 }

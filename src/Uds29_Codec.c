@@ -115,6 +115,8 @@ const char* Uds29_Codec_NrcToString(uint8_t nrc) {
     case 0x24: return "requestSequenceError";
     case 0x31: return "requestOutOfRange";
     case 0x34: return "authenticationRequired";
+    case 0x36: return "exceededNumberOfAttempts";
+    case 0x37: return "requiredTimeDelayNotExpired";
     case 0x50: return "certificateVerificationFailed_InvalidTimePeriod";
     case 0x51: return "certificateVerificationFailed_InvalidSignature";
     case 0x52: return "certificateVerificationFailed_InvalidChainOfTrust";

@@ -23,13 +23,21 @@ typedef struct {
     bool                deny_unlisted_sid; /* false: a SID without any access rule is allowed; true: denied */
     Uds29_CertPolicy    policy;          /* applied to the tester certificate; all-zero = chain + validity only */
     Uds29_PownFormat    pown;            /* signed data of the proofs of ownership; must match the tester's. Default: raw challenge */
+    uint8_t             supported_comm_config_mask; /* bit n = communicationConfiguration value n (0..7) is accepted in 0x01/0x02;
+                                            a request with another value -> NRC 0x5C. 0 = accept any */
+    uint8_t             max_failed_attempts; /* 0 = lockout off. Certificate / proof failures (NRC 0x50-0x58) are counted; the one reaching
+                                            this number is answered 0x36 and starts a lockout */
+    uint32_t            lockout_delay_ms;    /* during the lockout 0x01 / 0x02 / 0x03 -> NRC 0x37; afterwards the counter restarts at 0 */
+    bool                nrc_collapse;        /* false (default): standard-aligned NRCs 0x51 / 0x53 / 0x57. true: the 0.5.0 behaviour, bad
+                                            signature and revoked -> 0x52, key usage / EKU / algorithm -> 0x56 (reveals less to a tester) */
 } Uds29Srv_ConfigType;
 
-/* Opt-in certificate validation, see docs/certificate-validation.md. NRCs: certificate revoked (CRL or serial
-   list) / chain invalid 0x52, validity or no trusted time 0x50, key usage / EKU / algorithm policy 0x56, unparsable 0x54.
+/* Opt-in certificate validation, see docs/certificate-validation.md. NRCs: unparsable 0x54, validity or no trusted time 0x50,
+   signature 0x51 (OpenSSL only), chain invalid 0x52, key usage / EKU / algorithm policy 0x53, revoked (CRL or serial list) 0x57;
+   `nrc_collapse` folds 0x51 / 0x57 into 0x52 and 0x53 into 0x56.
    Intermediates and CRLs are part of `pki`. Time source for time_mode HOOK; NULL removes it. */
 Std_ReturnType  Uds29Srv_SetTimeSource(Uds29_TimeSourceFn fn, void* ctx);
-/* Serial blacklist (not copied, must outlive its use; NULL / 0 removes it). A tester certificate with one of these serials -> NRC 0x52. */
+/* Serial blacklist (not copied, must outlive its use; NULL / 0 removes it). A tester certificate with one of these serials -> NRC 0x57. */
 Std_ReturnType  Uds29Srv_SetRevokedSerials(const Uds29_Serial* list, uint16_t count);
 
 /* Loads the identity; E_NOT_OK on bad files, key/cert mismatch, invalid chain or bad challenge_len. */
@@ -45,6 +53,11 @@ bool            Uds29Srv_IsAuthenticated(void);
 /* IDLE, CERT_SENT (client cert accepted, challenge issued, waiting for 0x03), AUTHENTICATED.
    A rejected certificate/proof returns to IDLE. */
 Uds29_StateType Uds29Srv_GetState(void);
+/* Lockout (max_failed_attempts): failures counted since the last success / lockout expiry; a lockout is cleared by
+   its expiry, a successful authentication (counter) or Uds29Srv_ResetLockout (both). Lockout events: failure 0x36
+   "attempts exceeded", and for each refused request failure 0x37 "lockout". */
+uint16_t        Uds29Srv_GetFailedAttempts(void);
+void            Uds29Srv_ResetLockout(void);
 /* Events: state changes, and a failure event for every NRC sent (nrc != 0) or auth timeout (nrc == 0). */
 void            Uds29Srv_SetEventCallback(Uds29_EventCallback cb);
 

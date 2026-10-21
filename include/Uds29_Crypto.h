@@ -11,8 +11,11 @@ extern "C" {
 typedef enum {
     UDS29_PKI_OK = 0, UDS29_PKI_PARSE, UDS29_PKI_EXPIRED, UDS29_PKI_CHAIN,
     UDS29_PKI_REVOKED,          /* CRL or serial blacklist */
-    UDS29_PKI_POLICY,           /* key usage / EKU / algorithm policy */
-    UDS29_PKI_TIME_UNTRUSTED    /* no trusted time (core only, never returned by a backend) */
+    UDS29_PKI_POLICY,           /* key usage / EKU / algorithm policy (generic; the core returns the two finer values below) */
+    UDS29_PKI_TIME_UNTRUSTED,   /* no trusted time (core only, never returned by a backend) */
+    UDS29_PKI_SIGNATURE,        /* certificate signature does not verify against its issuer (OpenSSL only; mbedTLS reports CHAIN) */
+    UDS29_PKI_POLICY_USAGE,     /* keyUsage / EKU (core only) */
+    UDS29_PKI_POLICY_ALG        /* key type / signature algorithm (core only) */
 } Uds29_PkiResult;
 /* verify_peer_cert `at`: skip the validity-period checks (certificates and CRLs) altogether. */
 #define UDS29_AT_SKIP_VALIDITY INT64_MIN

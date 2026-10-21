@@ -5,6 +5,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-21
+
+### Added
+- Server: `supported_comm_config_mask` (communicationConfiguration values 0..7 accepted by 0x01/0x02, else NRC 0x5C; 0 = any), opt-in lockout `max_failed_attempts` / `lockout_delay_ms` (NRC 0x36 on the failure reaching the limit, 0x37 for 0x01/0x02/0x03 until the delay expires; failure events "attempts exceeded" / "lockout"), `Uds29Srv_GetFailedAttempts`, `Uds29Srv_ResetLockout`, and `nrc_collapse`. All zero/false = off.
+- `Uds29_PkiResult`: `UDS29_PKI_SIGNATURE` (OpenSSL `CERT_SIGNATURE_FAILURE`; mbedTLS cannot tell it from an untrusted chain and still returns CHAIN), `UDS29_PKI_POLICY_USAGE`, `UDS29_PKI_POLICY_ALG` (appended; `UDS29_PKI_POLICY` kept). `UDS29_NRC_EXCEEDED_NUMBER_OF_ATTEMPTS` (0x36), `UDS29_NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED` (0x37); `Uds29_Codec_NrcToString` names them. IDSM defaults: 0x36 HIGH, 0x37 MEDIUM. Client failure events distinguish "signature invalid" and "algorithm not allowed".
+
+### Changed
+- **Behaviour change: server NRCs now follow the ISO 14229-1 meanings** ([docs/certificate-validation.md](docs/certificate-validation.md) has the full table):
+
+  | Failure | 0.5.0 | 0.6.0 |
+  | --- | --- | --- |
+  | certificate revoked (CRL, serial blacklist) | 0x52 | **0x57** |
+  | keyUsage / EKU missing | 0x56 | **0x53** |
+  | key type / signature algorithm not allowed | 0x56 | **0x53** |
+  | bad certificate signature (OpenSSL) | 0x52 | **0x51** |
+  | chain invalid, role mismatch, validity, format, proof | unchanged | unchanged |
+
+  To keep the 0.5.0 responses set `Uds29Srv_ConfigType.nrc_collapse = true` (0x51 / 0x57 -> 0x52, 0x53 -> 0x56). A tester or IDSM mapping that matched 0x52 / 0x56 for these cases must be updated otherwise.
+- `Uds29Srv_ConfigType` has four new trailing fields (zero = off).
+
+### Known limitations
+- 0x51 is OpenSSL only. The lockout counter is global, not per tester. The mapping follows py-uds 4.1.0, not the ISO text.
+
 ## [0.5.0] - 2026-10-21
 
 ### Added

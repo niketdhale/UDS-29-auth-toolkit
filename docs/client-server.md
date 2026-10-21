@@ -53,8 +53,9 @@ authentication. Both sides are plain C11, use static memory only, and share the 
        │           authenticationComplete                       │
 ```
 
-A rejected step ends in a negative response `7F 29 <nrc>`: `0x50` certificate outside its validity period, `0x52` chain
-of trust, `0x54` format, `0x56` scope (role), `0x58` ownership verification failed, `0x24` wrong order, `0x13` length,
+A rejected step ends in a negative response `7F 29 <nrc>`: `0x50` certificate outside its validity period, `0x51` bad certificate
+signature, `0x52` chain of trust, `0x53` certificate not for this use (key usage / EKU / algorithm), `0x54` format, `0x56` scope (role),
+`0x57` revoked, `0x58` ownership verification failed, `0x5C` communicationConfiguration not supported, `0x36` / `0x37` lockout (opt-in), `0x24` wrong order, `0x13` length,
 `0x12` sub-function not supported. After a rejected certificate or proof the server is unauthenticated again.
 
 ## Server details

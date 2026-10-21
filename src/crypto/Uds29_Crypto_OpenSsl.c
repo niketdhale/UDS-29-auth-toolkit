@@ -71,6 +71,7 @@ static Uds29_PkiResult VerifyPeer(void* ctx, void* h, const uint8_t* der, uint16
                 int e = X509_STORE_CTX_get_error(sc);
                 if (e == X509_V_ERR_CERT_HAS_EXPIRED || e == X509_V_ERR_CERT_NOT_YET_VALID) res = UDS29_PKI_EXPIRED;
                 else if (e == X509_V_ERR_CERT_REVOKED) res = UDS29_PKI_REVOKED;
+                else if (e == X509_V_ERR_CERT_SIGNATURE_FAILURE) res = UDS29_PKI_SIGNATURE;
             }
         }
     }

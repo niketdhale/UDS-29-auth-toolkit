@@ -154,7 +154,9 @@ static Std_ReturnType OnResponse(const uint8_t* rx, uint16_t rn) {
                 return Fail(sub, v == UDS29_PKI_PARSE ? "ECU certificate unparsable"
                                : v == UDS29_PKI_EXPIRED ? "ECU certificate expired"
                                : v == UDS29_PKI_REVOKED ? "ECU certificate revoked"
-                               : v == UDS29_PKI_POLICY ? "ECU certificate violates the certificate policy"
+                               : v == UDS29_PKI_SIGNATURE ? "ECU certificate signature invalid"
+                               : v == UDS29_PKI_POLICY_ALG ? "ECU certificate algorithm not allowed by the certificate policy"
+                               : v == UDS29_PKI_POLICY || v == UDS29_PKI_POLICY_USAGE ? "ECU certificate violates the certificate policy"
                                : v == UDS29_PKI_TIME_UNTRUSTED ? "no trusted time to check the ECU certificate"
                                                         : "ECU certificate chain invalid", 0);
             Uds29_PownIn ecu = in;                                 /* the ECU is the signer here: OWN = its certificate */
