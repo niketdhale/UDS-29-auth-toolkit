@@ -2,14 +2,14 @@
 #include "Uds29_Der.h"
 #include <time.h>
 
-static bool Policy(const Uds29_CertPolicy* p, const uint8_t* der, uint16_t len) {
+static Uds29_PkiResult Policy(const Uds29_CertPolicy* p, const uint8_t* der, uint16_t len) {
     Uds29_DerCert c;
     unsigned ku;
-    if (!p->require_key_usage_digital_signature && !p->required_eku_oid && !p->allowed_key_types && !p->allowed_sig_algs) return true;
-    if (!Uds29_Der_ParseCert(der, len, &c)) return false;
-    if (p->require_key_usage_digital_signature && !(Uds29_Der_KeyUsage(&c, &ku) && (ku & 0x8000u))) return false;
-    if (p->allowed_key_types && !(Uds29_Der_KeyType(&c) & p->allowed_key_types)) return false;
-    if (p->allowed_sig_algs && !(Uds29_Der_SigAlg(&c) & p->allowed_sig_algs)) return false;
+    if (!p->require_key_usage_digital_signature && !p->required_eku_oid && !p->allowed_key_types && !p->allowed_sig_algs) return UDS29_PKI_OK;
+    if (!Uds29_Der_ParseCert(der, len, &c)) return UDS29_PKI_POLICY_USAGE;
+    if (p->require_key_usage_digital_signature && !(Uds29_Der_KeyUsage(&c, &ku) && (ku & 0x8000u))) return UDS29_PKI_POLICY_USAGE;
+    if (p->allowed_key_types && !(Uds29_Der_KeyType(&c) & p->allowed_key_types)) return UDS29_PKI_POLICY_ALG;
+    if (p->allowed_sig_algs && !(Uds29_Der_SigAlg(&c) & p->allowed_sig_algs)) return UDS29_PKI_POLICY_ALG;
     if (p->required_eku_oid) {
         const uint8_t *list, *o;
         size_t n, ol;
@@ -17,12 +17,12 @@ static bool Policy(const Uds29_CertPolicy* p, const uint8_t* der, uint16_t len) 
         bool found = false;
         if (p->required_eku_oid_len < 3 || p->required_eku_oid[0] != 0x06 || p->required_eku_oid[1] != p->required_eku_oid_len - 2u ||
             !Uds29_Der_Eku(&c, &list, &n))
-            return false;
+            return UDS29_PKI_POLICY_USAGE;
         for (const uint8_t* q = list; Uds29_Der_Tlv(&q, list + n, &t, &o, &ol); )
             found |= t == 0x06 && ol == p->required_eku_oid_len - 2u && !memcmp(o, p->required_eku_oid + 2, ol);
-        if (!found) return false;
+        if (!found) return UDS29_PKI_POLICY_USAGE;
     }
-    return true;
+    return UDS29_PKI_OK;
 }
 
 static bool Revoked(const Uds29_Verifier* v, const uint8_t* der, uint16_t len) {
@@ -55,7 +55,7 @@ Uds29_PkiResult Uds29_Verifier_Check(Uds29_Verifier* v, void* ident, const uint8
     Uds29_PkiResult r = Uds29_Crypto_VerifyPeer(ident, der, len, at);
     if (r != UDS29_PKI_OK) return r;
     if (Revoked(v, der, len)) return UDS29_PKI_REVOKED;
-    return Policy(&v->policy, der, len) ? UDS29_PKI_OK : UDS29_PKI_POLICY;
+    return Policy(&v->policy, der, len);
 }
 
 static bool Put(uint8_t* out, uint16_t cap, uint16_t* n, const uint8_t* p, uint16_t l) {

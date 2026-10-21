@@ -22,7 +22,8 @@ typedef struct {
 } Uds29_IdsM_ConfigType;
 
 /* Defaults: monitor 0x0290; failures enabled, event_id = 0x2900 | nrc, HIGH;
-   NRC 0x58 (ownership verification failed) CRITICAL; success 0x29F0 LOW, disabled; payload on. */
+   NRC 0x58 (ownership verification failed) CRITICAL; 0x36 (attempts exceeded, lockout started) HIGH,
+   0x37 (request refused during lockout) MEDIUM; success 0x29F0 LOW, disabled; payload on. */
 void           Uds29_IdsM_GetDefaultConfig(Uds29_IdsM_ConfigType* cfg);
 /* Copies cfg and registers the bridge via Uds29_SetEventCallback (replaces any other callback). Client role. */
 Std_ReturnType Uds29_IdsM_Init(const Uds29_IdsM_ConfigType* cfg);

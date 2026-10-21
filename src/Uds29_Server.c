@@ -34,6 +34,9 @@ static struct {
     bool                bidi;
     Uds29Srv_Fault      fault;
     uint8_t             forced_nrc;
+    uint16_t            failed;             /* counted certificate / proof failures */
+    bool                locked;
+    uint32_t            lock_t0;
     uint32_t          (*clock)(void);       /* test hook, NULL = Uds29_Os_GetTimeMs */
     Uds29_Req           rq;                 /* scratch, kept off the stack */
     Uds29_Resp          rs;
@@ -74,8 +77,14 @@ static Std_ReturnType Out(uint8_t* resp, uint16_t* cap) {
 
 /* Negative response; `reset` also drops a pending/finished authentication (rejected certificate or proof). */
 static Std_ReturnType Neg(uint8_t sub, uint8_t nrc, bool reset, uint8_t* resp, uint16_t* cap) {
+    const char* why = Uds29_Codec_NrcToString(nrc);
+    if (g.cfg.max_failed_attempts && nrc >= UDS29_NRC_CVF_INVALID_TIME_PERIOD && nrc <= UDS29_NRC_OWNERSHIP_VERIFICATION_FAILED &&
+        ++g.failed >= g.cfg.max_failed_attempts) {
+        nrc = UDS29_NRC_EXCEEDED_NUMBER_OF_ATTEMPTS; why = "attempts exceeded";
+        g.locked = true; g.lock_t0 = Now();
+    } else if (nrc == UDS29_NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED) why = "lockout";
     if (reset) SetState(UDS29_STATE_IDLE);
-    Emit(UDS29_EVT_FAILURE, sub, nrc, Uds29_Codec_NrcToString(nrc));
+    Emit(UDS29_EVT_FAILURE, sub, nrc, why);
     memset(&g.rs, 0, sizeof g.rs);
     g.rs.neg = true; g.rs.nrc = nrc;
     return Out(resp, cap);
@@ -95,22 +104,35 @@ static bool Pown(bool ecu_signs, const uint8_t* verifier, uint16_t verifier_len,
     return Uds29_Pown_Build(&g.cfg.pown, &in, out, cap, n);
 }
 
+/* Server NRC for a failed peer-certificate check (see docs/certificate-validation.md); nrc_collapse = the 0.5.0 values. */
+static uint8_t PkiNrc(Uds29_PkiResult r) {
+    uint8_t n;
+    switch (r) {
+    case UDS29_PKI_PARSE:   return UDS29_NRC_CVF_INVALID_FORMAT;
+    case UDS29_PKI_EXPIRED:
+    case UDS29_PKI_TIME_UNTRUSTED: return UDS29_NRC_CVF_INVALID_TIME_PERIOD;
+    case UDS29_PKI_SIGNATURE: n = UDS29_NRC_CVF_INVALID_SIGNATURE; break;
+    case UDS29_PKI_REVOKED: n = UDS29_NRC_CVF_INVALID_CERTIFICATE; break;
+    case UDS29_PKI_POLICY:
+    case UDS29_PKI_POLICY_USAGE:
+    case UDS29_PKI_POLICY_ALG: n = UDS29_NRC_CVF_INVALID_TYPE; break;
+    default: return UDS29_NRC_CVF_INVALID_CHAIN_OF_TRUST;
+    }
+    if (g.cfg.nrc_collapse) n = n == UDS29_NRC_CVF_INVALID_TYPE ? UDS29_NRC_CVF_INVALID_SCOPE : UDS29_NRC_CVF_INVALID_CHAIN_OF_TRUST;
+    return n;
+}
+
 static Std_ReturnType VerifyCert(uint8_t* resp, uint16_t* cap) {
     const Uds29_Req* rq = &g.rq;
+    if (g.cfg.supported_comm_config_mask && (rq->comm > 7 || !(g.cfg.supported_comm_config_mask & (1u << rq->comm))))
+        return Neg(rq->sub, UDS29_NRC_CONFIGURATION_DATA_USAGE_FAILED, true, resp, cap);
     if (g.fault == UDS29SRV_FAULT_WRONG_CERT_FORMAT && rq->sub == UDS29_SF_VERIFY_CERT_UNIDIRECTIONAL)
         return Neg(rq->sub, UDS29_NRC_CVF_INVALID_FORMAT, true, resp, cap);
     int64_t at = g.fault == UDS29SRV_FAULT_EXPIRED_CERT ? (int64_t)time(NULL) + 11LL * 365 * 86400 : 0;
     bool skipped;
     Uds29_PkiResult vr = Uds29_Verifier_Check(&g.vf, g.ident, rq->cert, rq->cert_len, at, &skipped);
     if (skipped) Emit(UDS29_EVT_WARNING, rq->sub, 0, "validity not checked");
-    switch (vr) {
-    case UDS29_PKI_OK: break;
-    case UDS29_PKI_PARSE:   return Neg(rq->sub, UDS29_NRC_CVF_INVALID_FORMAT, true, resp, cap);
-    case UDS29_PKI_EXPIRED:
-    case UDS29_PKI_TIME_UNTRUSTED: return Neg(rq->sub, UDS29_NRC_CVF_INVALID_TIME_PERIOD, true, resp, cap);
-    case UDS29_PKI_POLICY:  return Neg(rq->sub, UDS29_NRC_CVF_INVALID_SCOPE, true, resp, cap);
-    default:                return Neg(rq->sub, UDS29_NRC_CVF_INVALID_CHAIN_OF_TRUST, true, resp, cap); /* CHAIN, REVOKED */
-    }
+    if (vr != UDS29_PKI_OK) return Neg(rq->sub, PkiNrc(vr), true, resp, cap);
     Uds29_Authz az;
     memset(&az, 0, sizeof az);
     Std_ReturnType pr = g.parser ? g.parser(rq->cert, rq->cert_len, &az, g.parser_ctx)
@@ -167,7 +189,7 @@ static Std_ReturnType VerifyPown(uint8_t* resp, uint16_t* cap) {
     g.rs.sub = rq->sub;
     g.rs.ret = UDS29_RET_OWNERSHIP_VERIFIED_AUTH_COMPLETE;
     Std_ReturnType r = Out(resp, cap);
-    if (r == E_OK) SetState(UDS29_STATE_AUTHENTICATED);
+    if (r == E_OK) { g.failed = 0; SetState(UDS29_STATE_AUTHENTICATED); }
     return r;
 }
 
@@ -178,6 +200,10 @@ static Std_ReturnType Handle(const uint8_t* d, uint16_t n, uint8_t* resp, uint16
     if (!Uds29_Codec_DecodeRequest(d, n, &g.rq)) /* also: a field above the core's buffer sizes */
         return Neg(d[1], UDS29_NRC_INCORRECT_LENGTH, false, resp, cap);
     if (g.fault == UDS29SRV_FAULT_FORCE_NRC) return Neg(g.rq.sub, g.forced_nrc, false, resp, cap);
+    if (g.locked && g.rq.sub >= UDS29_SF_VERIFY_CERT_UNIDIRECTIONAL && g.rq.sub <= UDS29_SF_PROOF_OF_OWNERSHIP) {
+        if ((uint32_t)(Now() - g.lock_t0) >= g.cfg.lockout_delay_ms) { g.locked = false; g.failed = 0; }
+        else return Neg(g.rq.sub, UDS29_NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED, false, resp, cap);
+    }
 
     switch (g.rq.sub) {
     case UDS29_SF_DEAUTHENTICATE:
@@ -215,6 +241,7 @@ Std_ReturnType Uds29Srv_Init(const Uds29Srv_ConfigType* c) {
     g.ident = Uds29_Crypto_LoadIdentity(&pc, "ecu", g.cert, sizeof g.cert, &g.cert_len);
     g.init = g.ident != NULL;
     g.state = UDS29_STATE_IDLE;
+    g.failed = 0; g.locked = false;
     memset(&g.authz, 0, sizeof g.authz);
     Uds29_Os_Unlock();
     return g.init ? E_OK : E_NOT_OK;
@@ -257,6 +284,13 @@ Uds29_StateType Uds29Srv_GetState(void) {
     Uds29_Os_Unlock();
     return s;
 }
+
+uint16_t Uds29Srv_GetFailedAttempts(void) {
+    Uds29_Os_Lock(); uint16_t n = g.failed; Uds29_Os_Unlock();
+    return n;
+}
+
+void Uds29Srv_ResetLockout(void) { Uds29_Os_Lock(); g.failed = 0; g.locked = false; Uds29_Os_Unlock(); }
 
 bool Uds29Srv_IsAuthenticated(void) { return Uds29Srv_GetState() == UDS29_STATE_AUTHENTICATED; }
 

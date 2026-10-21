@@ -21,6 +21,7 @@ void Uds29_IdsM_GetDefaultConfig(Uds29_IdsM_ConfigType* c) {
     c->failure_no_nrc = (Uds29_IdsM_MapEntry){0x2900, IDSM_SEVERITY_HIGH, true};
     for (int i = 0; i < 256; i++) c->nrc[i] = (Uds29_IdsM_MapEntry){(uint16_t)(0x2900 | i), IDSM_SEVERITY_HIGH, true};
     c->nrc[UDS29_NRC_OWNERSHIP_VERIFICATION_FAILED].severity = IDSM_SEVERITY_CRITICAL;
+    c->nrc[UDS29_NRC_REQUIRED_TIME_DELAY_NOT_EXPIRED].severity = IDSM_SEVERITY_MEDIUM; /* 0x36 stays HIGH */
 }
 
 void Uds29_IdsM_OnEvent(const Uds29_EventType* e) {

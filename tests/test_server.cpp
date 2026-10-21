@@ -215,3 +215,65 @@ TEST_F(Server, RequiredRoleFromSubjectOu) {
     EXPECT_EQ(Uds29_AuthenticateUnidirectional(), E_NOT_OK);
     std::system(("rm -rf " + dir).c_str());
 }
+
+/* ── communicationConfiguration mask (0x5C) and lockout (0x36 / 0x37) ── */
+static Bytes CertReq(uint8_t comm) {
+    static Uds29_Req r;
+    r = Uds29_Req{}; r.sub = UDS29_SF_VERIFY_CERT_UNIDIRECTIONAL; r.comm = comm; r.cert_len = 40; r.challenge_len = 32;
+    uint8_t b[UDS29_MAX_MSG_LEN];
+    return Bytes(b, b + Uds29_Codec_EncodeRequest(&r, b, sizeof b));
+}
+
+TEST_F(Server, CommConfigMask) {
+    Uds29Srv_ConfigType c{}; c.pki.mode = UDS29_PKI_SAMPLE; c.supported_comm_config_mask = 0x03; /* 0 and 1 */
+    Start(c);
+    EXPECT_EQ(Ask(CertReq(2)), Neg(UDS29_NRC_CONFIGURATION_DATA_USAGE_FAILED));
+    EXPECT_EQ(Ask(CertReq(9)), Neg(UDS29_NRC_CONFIGURATION_DATA_USAGE_FAILED));
+    EXPECT_NE(Ask(CertReq(1)), Neg(UDS29_NRC_CONFIGURATION_DATA_USAGE_FAILED)); /* passes the mask (junk certificate: 0x54) */
+    Uds29_ConfigType cc{1, 32};
+    Uds29_DeInit(); ASSERT_EQ(Uds29_Init(&cc), E_OK); Uds29_SetTransport(ToServer, nullptr);
+    Uds29_PkiConfigType pki{}; pki.mode = UDS29_PKI_SAMPLE; ASSERT_EQ(Uds29_SetPki(&pki), E_OK);
+    EXPECT_EQ(Uds29_AuthenticateUnidirectional(), E_OK);
+}
+
+TEST_F(Server, LockoutAfterFailedAttemptsWithFakeClock) {
+    Uds29Srv_ConfigType c{}; c.pki.mode = UDS29_PKI_SAMPLE; c.max_failed_attempts = 3; c.lockout_delay_ms = 5000;
+    Start(c);
+    Uds29Srv_SetClockForTest(FakeClock);
+    Bytes junk = CertReq(0); /* certificate bytes are zeros: 0x54 each time */
+    EXPECT_EQ(Ask(junk), Neg(0x54));
+    EXPECT_EQ(Ask(junk), Neg(0x54));
+    EXPECT_EQ(Uds29Srv_GetFailedAttempts(), 2);
+    EXPECT_EQ(Ask(junk), Neg(0x36));                      /* third failure: attempts exceeded */
+    EXPECT_STREQ(g_sev.back().description, "attempts exceeded");
+    g_now += 4999;
+    EXPECT_EQ(Ask(junk), Neg(0x37));
+    EXPECT_EQ(Ask(Pown()), Neg(0x37));
+    EXPECT_STREQ(g_sev.back().description, "lockout");
+    EXPECT_EQ(Uds29_AuthenticateUnidirectional(), E_NOT_OK);
+    EXPECT_EQ(g_cev.back().nrc, 0x37);
+    EXPECT_EQ(Ask({0x29, 0x08}), (Bytes{0x69, 0x08, 0x02})); /* other sub-functions are not locked */
+    g_now += 1;
+    EXPECT_EQ(Uds29_AuthenticateUnidirectional(), E_OK);  /* delay over: counter reset, real authentication works */
+    EXPECT_EQ(Uds29Srv_GetFailedAttempts(), 0);
+
+    /* success resets the counter */
+    Uds29Srv_DeInit(); Start(c); Uds29Srv_SetClockForTest(FakeClock);
+    EXPECT_EQ(Ask(junk), Neg(0x54));
+    EXPECT_EQ(Uds29Srv_GetFailedAttempts(), 1);
+    ASSERT_EQ(Uds29_AuthenticateUnidirectional(), E_OK);
+    EXPECT_EQ(Uds29Srv_GetFailedAttempts(), 0);
+
+    /* manual reset ends a lockout */
+    Ask(junk); Ask(junk);
+    EXPECT_EQ(Ask(junk), Neg(0x36));
+    EXPECT_EQ(Ask(junk), Neg(0x37));
+    Uds29Srv_ResetLockout();
+    EXPECT_EQ(Ask(junk), Neg(0x54));
+}
+
+TEST_F(Server, LockoutOffByDefault) {
+    StartDefault();
+    for (int i = 0; i < 20; i++) EXPECT_EQ(Ask(CertReq(0)), Neg(0x54));
+    EXPECT_EQ(Uds29Srv_GetFailedAttempts(), 0);
+}

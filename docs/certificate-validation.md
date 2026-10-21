@@ -23,30 +23,58 @@ The core checks (blacklist, key usage, EKU, algorithms) read the certificate wit
 | # | Check | Configured with | Default | Server NRC | Client (ECU certificate) |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Certificate parses | - | on | 0x54 invalidFormat | fails, "unparsable" |
-| 2 | Signature chain to the root CA, `basicConstraints` / `pathLen` (done by the library) | `root_ca_path` | on | 0x52 invalidChainOfTrust | fails, "chain invalid" |
+| 2 | Signature chain to the root CA, `basicConstraints` / `pathLen` (done by the library) | `root_ca_path` | on | 0x52 invalidChainOfTrust; 0x51 invalidSignature for a bad certificate signature (OpenSSL only) | fails, "chain invalid" / "signature invalid" |
 | 3 | Chain through intermediate CAs | `Uds29_PkiConfigType.intermediate_paths[]` (max `UDS29_MAX_INTERMEDIATES`, 2) | none | 0x52 if the chain cannot be built | same |
 | 4 | Validity period (`notBefore` / `notAfter`) | `policy.time_mode` | on, system clock | 0x50 invalidTimePeriod | fails, "expired" |
 | 5 | Trusted time available / not going back | `policy.time_mode`, `time_monotonic_guard`, `Uds29(Srv)_SetTimeSource` | system clock, no guard | 0x50 | fails, "no trusted time" |
-| 6 | CRL (signature, `nextUpdate`, revoked serials) | `Uds29_PkiConfigType.crl_paths[]` (max `UDS29_MAX_CRLS`, 3) | none (not checked) | 0x52 | fails, "revoked" / "chain invalid" |
-| 7 | Serial blacklist | `Uds29(Srv)_SetRevokedSerials` | none | 0x52 | fails, "revoked" |
-| 8 | `keyUsage` present with digitalSignature | `policy.require_key_usage_digital_signature` | off | 0x56 invalidScope | fails, "violates the certificate policy" |
-| 9 | `extKeyUsage` lists a given OID | `policy.required_eku_oid` (DER) | off | 0x56 | same |
-| 10 | Key type (P-256, P-384, Ed25519) | `policy.allowed_key_types` | 0 = any | 0x56 | same |
-| 11 | Certificate signature algorithm (ecdsa-with-SHA256 / SHA384, Ed25519) | `policy.allowed_sig_algs` | 0 = any | 0x56 | same |
+| 6 | CRL (signature, `nextUpdate`, revoked serials) | `Uds29_PkiConfigType.crl_paths[]` (max `UDS29_MAX_CRLS`, 3) | none (not checked) | 0x57 revoked; 0x52 stale CRL | fails, "revoked" / "chain invalid" |
+| 7 | Serial blacklist | `Uds29(Srv)_SetRevokedSerials` | none | 0x57 invalidCertificate | fails, "revoked" |
+| 8 | `keyUsage` present with digitalSignature | `policy.require_key_usage_digital_signature` | off | 0x53 invalidType | fails, "violates the certificate policy" |
+| 9 | `extKeyUsage` lists a given OID | `policy.required_eku_oid` (DER) | off | 0x53 | same |
+| 10 | Key type (P-256, P-384, Ed25519) | `policy.allowed_key_types` | 0 = any | 0x53 | fails, "algorithm not allowed" |
+| 11 | Certificate signature algorithm (ecdsa-with-SHA256 / SHA384, Ed25519) | `policy.allowed_sig_algs` | 0 = any | 0x53 | fails, "algorithm not allowed" |
 | 12 | Access rights from the certificate | `profile`, `required_roles` | off | 0x55 / 0x56 | - |
 | 13 | Proof of ownership signature, over the configured data | `pown` | raw challenge | 0x58 ownershipVerificationFailed | fails, "proof of ownership invalid" |
 
 A failed check on the server answers the NRC, returns the server to IDLE and emits a failure event. On the client it moves
 the session to FAILED and emits a failure event (`nrc` 0: the failure is local, the description says which check).
 
-### NRC mapping (the choices made)
+### NRC mapping
 
-| Result | NRC | Why |
-| --- | --- | --- |
-| unparsable | 0x54 | as before |
-| expired / not yet valid, **no trusted time** | 0x50 | the time period cannot be established |
-| chain invalid, **revoked** (CRL or blacklist) | 0x52 | a revoked certificate no longer chains to a trusted anchor; there is no dedicated NRC |
-| **policy** (key usage, EKU, key type, signature algorithm) | 0x56 invalidScope | "this certificate is not allowed for this purpose". 0x53 (type) and 0x57 (certificate) are also defensible; ISO 14229-1 is paywalled and this was not verified against it. Change the mapping in `VerifyCert()` (`src/Uds29_Server.c`) if your OEM spec says otherwise |
+Since 0.6.0 the server NRCs follow the ISO 14229-1 meanings (as named in py-uds 4.1.0 `nrc.py`; the ISO text itself was not
+consulted). **This changes 0.5.0 behaviour**: revoked certificates answered 0x52 and every policy failure 0x56 before.
+Set `Uds29Srv_ConfigType.nrc_collapse = true` to get exactly the 0.5.0 values back (and reveal less to a tester).
+
+| NRC | Name | Meaning | Sent by the server when | `nrc_collapse` |
+| --- | --- | --- | --- | --- |
+| 0x34 | authenticationRequired | service needs authentication | `Uds29Srv_CheckAccess` denies (or `deny_nrc`) | same |
+| 0x36 | exceededNumberOfAttempts | too many failed attempts | lockout enabled (`max_failed_attempts`) and this failure is the last allowed one | same |
+| 0x37 | requiredTimeDelayNotExpired | wait before retrying | 0x01 / 0x02 / 0x03 during the lockout (`lockout_delay_ms`) | same |
+| 0x50 | InvalidTimePeriod | certificate expired / not yet valid | validity check fails, or no trusted time | same |
+| 0x51 | InvalidSignature | certificate signature could not be verified | issuer found but the signature does not verify (OpenSSL; mbedTLS gives 0x52) | 0x52 |
+| 0x52 | InvalidChainOfTrust | cannot be verified against the stored issuing authority | unknown issuer, chain cannot be built, CA constraints, stale CRL | same |
+| 0x53 | InvalidType | certificate does not match the requested use case | keyUsage / EKU missing, key type or signature algorithm not allowed | 0x56 |
+| 0x54 | InvalidFormat | certificate not parsable | parse failure (also the `inject wrongfmt` fault) | same |
+| 0x55 | InvalidContent | content could not be used | the authorization profile / parser hook rejects the certificate | same |
+| 0x56 | InvalidScope | scope does not match the server contents | `required_roles` not satisfied | same |
+| 0x57 | InvalidCertificate | server has revoked access | CRL hit or serial blacklist | 0x52 |
+| 0x58 | OwnershipVerificationFailed | proof of ownership wrong | 0x03 signature does not verify | same |
+| 0x59 | ChallengeCalculationFailed | no challenge | RNG or proof-of-ownership data cannot be produced | same |
+| 0x5A | SettingAccessRightsFailed | - | not sent (access rights are not set by this server) | same |
+| 0x5B | SessionKeyCreationDerivationFailed | - | not sent (no session key derivation) | same |
+| 0x5C | ConfigurationDataUsageFailed | communicationConfiguration cannot be used | `supported_comm_config_mask` set and the 0x01 / 0x02 value is not in it | same |
+| 0x5D | DeAuthenticationFailed | - | not sent (0x00 always succeeds) | same |
+
+0.5.0 -> 0.6.0: revoked 0x52 -> **0x57**; keyUsage / EKU / key type / signature algorithm 0x56 -> **0x53**; bad certificate
+signature 0x52 -> **0x51** (OpenSSL); role mismatch stays 0x56.
+
+**Lockout** (off by default): `max_failed_attempts` counts 0x50-0x58 responses; the one reaching the limit is sent as 0x36 and
+starts a delay of `lockout_delay_ms` (server clock, `Uds29_Os_GetTimeMs`) during which 0x01 / 0x02 / 0x03 answer 0x37 (0x37 is
+not counted). After the delay, or a successful authentication, or `Uds29Srv_ResetLockout()`, the counter restarts. Failure
+events carry "attempts exceeded" (0x36) and "lockout" (0x37); the IDSM bridge reports them (0x36 HIGH, 0x37 MEDIUM).
+The counter is global, not per tester: an attacker can lock the genuine tester out. Use it knowingly.
+
+mbedTLS cannot tell a bad signature from an untrusted chain (both are `BADCERT_NOT_TRUSTED`), so it answers 0x52 where OpenSSL answers 0x51.
 
 ## Intermediate CAs
 
@@ -83,7 +111,7 @@ They are read when the identity is loaded; to refresh them, call `Uds29_SetPki` 
 is a CRL substitute for ECUs that cannot store a CRL, and is checked by the core after the chain verified.
 `openssl x509 -serial` prints it in hex.
 
-Revoked: server NRC 0x52; client failure "ECU certificate revoked".
+Revoked: server NRC 0x57 (0x52 with `nrc_collapse`); client failure "ECU certificate revoked".
 
 ## Key usage, EKU, algorithms
 
@@ -101,7 +129,7 @@ cfg.policy.allowed_sig_algs  = UDS29_SIG_ECDSA_SHA256;
   limits them. A key type outside the list of three (for example RSA) fails when `allowed_key_types` is set.
 - Sample PKI: every tester certificate carries `keyUsage = digitalSignature` and EKU `1.3.6.1.4.1.99999.29.100`, the ECU
   certificate `.101` (both **EXAMPLE** OIDs: replace 99999 with your own Private Enterprise Number). A server requiring
-  `.100` therefore rejects the ECU certificate used as a tester certificate (NRC 0x56), and a client requiring `.101` rejects a tester
+  `.100` therefore rejects the ECU certificate used as a tester certificate (NRC 0x53), and a client requiring `.101` rejects a tester
   certificate presented as an ECU. This is independent of the role OIDs of the access-control profile ([access-control.md](access-control.md)):
   the EKU says *what kind of certificate* it is, the roles say *what its holder may do*.
 - Fixtures: `tester_p384` (P-384 key), `tester_sha384` (signed with ecdsa-with-SHA384).
@@ -185,5 +213,5 @@ optional. A backend that ignores the new config fields keeps the old behaviour. 
 - Algorithm policy: leaf only; no RSA support in the policy bitmasks (set a mask and RSA fails); Ed25519 only with OpenSSL.
 - A stale CRL or an untrusted time locks authentication out by design (fail closed).
 - Time trust is only as good as the hook you provide. In SKIP mode nothing about dates is verified.
-- Policy failures all answer NRC 0x56; which check failed is not distinguishable on the wire.
+- Key usage / EKU and algorithm failures all answer NRC 0x53; which one failed is only visible in the client event text. Signature failure (0x51) is OpenSSL only.
 - Tested on Linux with OpenSSL 3 and mbedTLS 3.6; the sample CRLs are valid for ten years and the sample certificates for ten years from generation.

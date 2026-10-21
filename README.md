@@ -144,14 +144,16 @@ behaviour (chain + validity at the system time); everything else is opt-in:
 | Check | Config | Server NRC |
 | --- | --- | --- |
 | Parse / chain to the root (CA constraints, pathLen) | `root_ca_path` | 0x54 / 0x52 |
-| Through intermediate CAs (leaf-only peers) | `intermediate_paths[]` (`UDS29_MAX_INTERMEDIATES`) | 0x52 |
+| Through intermediate CAs (leaf-only peers) | `intermediate_paths[]` (`UDS29_MAX_INTERMEDIATES`) | 0x52 (0x51 bad signature, OpenSSL only) |
 | Validity period | `policy.time_mode` SYSTEM / HOOK / SKIP_WITH_EVENT | 0x50 |
 | Trusted time, never goes back | `Uds29(Srv)_SetTimeSource`, `time_monotonic_guard` | 0x50 |
-| CRL (incl. `nextUpdate`) | `crl_paths[]` | 0x52 |
-| Serial blacklist | `Uds29(Srv)_SetRevokedSerials` | 0x52 |
-| keyUsage digitalSignature, EKU | `policy.require_key_usage_digital_signature`, `required_eku_oid` | 0x56 |
-| Key type, signature algorithm | `policy.allowed_key_types`, `allowed_sig_algs` | 0x56 |
+| CRL (incl. `nextUpdate`) | `crl_paths[]` | 0x57 |
+| Serial blacklist | `Uds29(Srv)_SetRevokedSerials` | 0x57 |
+| keyUsage digitalSignature, EKU | `policy.require_key_usage_digital_signature`, `required_eku_oid` | 0x53 |
+| Key type, signature algorithm | `policy.allowed_key_types`, `allowed_sig_algs` | 0x53 |
 | Proof-of-ownership data | `pown` (raw challenge, or server/client challenge, additional parameter, certificate hashes) | 0x58 |
+
+**NRCs changed in 0.6.0** (revoked 0x52 -> 0x57, key usage / EKU / algorithm 0x56 -> 0x53, bad signature 0x52 -> 0x51 on OpenSSL); `Uds29Srv_ConfigType.nrc_collapse = true` restores the 0.5.0 values. Also new: `supported_comm_config_mask` (0x5C) and an opt-in lockout (`max_failed_attempts`, `lockout_delay_ms`: 0x36 / 0x37). Full NRC table (0x34 / 0x36 / 0x37 / 0x50-0x5D) in the document below.
 
 Table of every check, NRC reasoning, recommended production profile and limits (no OCSP):
 [docs/certificate-validation.md](docs/certificate-validation.md). The server and client configs gained trailing fields
@@ -409,6 +411,7 @@ The OS port adds a mutex. Code size depends on the backend and compiler; it was 
 - Ed25519 PKI is OpenSSL-only; the mbedTLS backend returns `E_NOT_OK`.
 - Tested on Linux only (GCC, OpenSSL and mbedTLS). The FreeRTOS port and example are compile-checked against the kernel headers (posix port), never run on a target. The QNX and arm-none-eabi toolchain files and the DoIP demo on QNX are untested here. No Windows support.
 - The DoIP and CAN demos are demonstration transports. DoIP: TCP only (no UDP discovery), no TLS, one tester at a time, loopback by default; compatibility with other DoIP entities (for example niketdhale/DOIP_ECU_Simulator) is by the standard and was not tested. CAN: a userspace ISO-TP (classic CAN, 4095 bytes); the SocketCAN demos compile but were **not run** (the development machine has no CAN support in its kernel); only the ISO-TP code over an in-process loopback driver is tested.
+- Server NRCs: 0x51 (bad certificate signature) is OpenSSL only, mbedTLS answers 0x52. The lockout counter is global, not per tester (a hostile tester can lock out the real one). 0x5A, 0x5B and 0x5D are never sent. The NRC mapping follows py-uds 4.1.0 names, not a reading of the paywalled ISO text.
 - The IDSM bridge is fire-and-forget: it ignores `IdsM_ReportEvent` errors; IDSM forwards to DEM asynchronously.
 
 ## License
