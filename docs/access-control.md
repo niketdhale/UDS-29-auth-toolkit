@@ -3,14 +3,20 @@
 SID 0x29 proves *who* the tester is. This part of the server decides *what that tester may do*, using information the
 OEM put into the tester's certificate. Server side only (`UDS29_ROLE=SERVER` or `BOTH`).
 
-```mermaid
-flowchart LR
-    C["Tester certificate<br/>roles + allow-lists"] -->|"0x29 0x01 / 0x02"| P["Profile or parser hook<br/>(OEM format)"]
-    P --> A["Uds29_Authz<br/>roles, services[], dids[], rids[]"]
-    A --> K["Uds29Srv_CheckAccess<br/>+ access rule table"]
-    R["Access rules (ECU policy)<br/>SID / sub / DID / RID -> roles"] --> K
-    K -->|"E_OK"| S["your service handler"]
-    K -->|"E_NOT_OK, NRC 0x34"| N["7F sid 34"]
+```text
+ Tester certificate                  Profile or parser hook
+ roles + allow-lists ──0x29 01/02──▶ (OEM format)
+                                            │
+                                            ▼
+                                     Uds29_Authz
+                                     roles, services[], dids[], rids[]
+                                            │
+ Access rules (ECU policy)                  ▼
+ SID / sub / DID / RID → roles ─────▶ Uds29Srv_CheckAccess
+                                            │
+                          ┌─────────────────┴─────────────────┐
+                          ▼ E_OK                              ▼ E_NOT_OK
+                  your service handler              7F <sid> 34 (NRC 0x34)
 ```
 
 - The **certificate** says: this holder has roles `R` (a bit mask) and, optionally, may only use these services, DIDs
