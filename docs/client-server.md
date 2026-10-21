@@ -15,34 +15,42 @@ authentication. Both sides are plain C11, use static memory only, and share the 
 
 ## Unidirectional authentication (0x01, 0x03)
 
-```mermaid
-sequenceDiagram
-    participant C as Client (tester)
-    participant S as Server (ECU)
-    C->>S: 29 01 verifyCertificateUnidirectional, client certificate
-    Note over S: check chain, validity and optional role
-    S-->>C: 69 01 11 certificateVerified, ownershipNecessary, challenge
-    Note over C: sign the challenge with the client key
-    C->>S: 29 03 proofOfOwnership, signature
-    Note over S: verify signature with the client certificate
-    S-->>C: 69 03 12 ownershipVerified, authenticationComplete
-    Note over S: state AUTHENTICATED
-    C->>S: 29 00 deAuthenticate
-    S-->>C: 69 00 10 deAuthenticationSuccessful
+```text
+ Client (tester)                                          Server (ECU)
+       │                                                        │
+       │── 29 01  verifyCertificateUnidirectional ─────────────▶│
+       │          client certificate                            │ check chain, validity,
+       │                                                        │ optional role
+       │◀───────── 69 01 11  certificateVerified, ──────────────│
+       │           ownershipNecessary, challenge                │
+ sign challenge                                                 │
+ with client key                                                │
+       │── 29 03  proofOfOwnership, signature ─────────────────▶│
+       │                                                        │ verify signature with
+       │                                                        │ client certificate
+       │◀───────── 69 03 12  ownershipVerified, ────────────────│
+       │           authenticationComplete                       │ state AUTHENTICATED
+       │                                                        │
+       │── 29 00  deAuthenticate ──────────────────────────────▶│
+       │◀───────── 69 00 10  deAuthenticationSuccessful ────────│
 ```
 
 ## Bidirectional authentication (0x02, 0x03)
 
-```mermaid
-sequenceDiagram
-    participant C as Client (tester)
-    participant S as Server (ECU)
-    C->>S: 29 02 verifyCertificateBidirectional, client certificate, client challenge
-    Note over S: check client certificate, sign the client challenge
-    S-->>C: 69 02 11 server challenge, ECU certificate, ECU signature
-    Note over C: verify ECU certificate chain and signature
-    C->>S: 29 03 proofOfOwnership, signature over server challenge
-    S-->>C: 69 03 12 ownershipVerified, authenticationComplete
+```text
+ Client (tester)                                          Server (ECU)
+       │                                                        │
+       │── 29 02  verifyCertificateBidirectional ──────────────▶│
+       │          client certificate, client challenge          │ check client certificate,
+       │                                                        │ sign the client challenge
+       │◀───────── 69 02 11  server challenge, ─────────────────│
+       │           ECU certificate, ECU signature               │
+ verify ECU certificate                                         │
+ chain and signature                                            │
+       │── 29 03  proofOfOwnership, ───────────────────────────▶│
+       │          signature over server challenge               │
+       │◀───────── 69 03 12  ownershipVerified, ────────────────│
+       │           authenticationComplete                       │
 ```
 
 A rejected step ends in a negative response `7F 29 <nrc>`: `0x50` certificate outside its validity period, `0x52` chain
