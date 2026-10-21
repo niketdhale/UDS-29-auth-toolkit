@@ -187,6 +187,15 @@ Rules of the check:
 A denial also raises a server event (`kind == FAILURE`, `description` "access denied", `nrc`), so the IDSM bridge reports it.
 Authentication state and authorization are dropped together (de-authentication, timeout, rejected certificate).
 
+## Certificate purpose (EKU) versus roles
+
+Roles and allow-lists (this document) say what the holder of a *valid tester certificate* may do. Whether a certificate is a
+tester certificate at all is a separate, earlier check: `keyUsage` and `extKeyUsage` in `Uds29Srv_ConfigType.policy`
+([certificate-validation.md](certificate-validation.md)). The sample PKI marks tester certificates with EKU
+`1.3.6.1.4.1.99999.29.100` and the ECU certificate with `.101`, so a server that requires `.100` refuses the ECU certificate used as a
+tester identity (NRC 0x56) before any role is read. Keep the two
+arcs apart: EKU for the kind of certificate, role OIDs for the rights.
+
 ## CLI
 
 `uds29_cli` (client mode) prints what a certificate carries, decoded with the example profile of
@@ -204,7 +213,7 @@ authz (example profile 1.3.6.1.4.1.99999.29.x): roles=0x00000004 oem
   rids:     (any)
 ```
 
-(`cert inspect <file> [der]`; PEM by default.) In server mode the example rules are active and the policy can be
+(`cert inspect <file> [der]`; PEM by default. It also prints serial, key type, signature algorithm, keyUsage, EKU and the chain result against the PKI loaded with `pki load`.) In server mode the example rules are active and the policy can be
 queried; `login` authenticates a sample tester inside the same process so there is someone to check:
 
 ```

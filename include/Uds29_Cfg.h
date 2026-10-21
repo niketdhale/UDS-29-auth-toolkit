@@ -20,6 +20,10 @@
 #ifndef UDS29_MAX_ALLOW
 #define UDS29_MAX_ALLOW 32u           /* entries per certificate allow-list (services, DIDs, RIDs) */
 #endif
+#ifndef UDS29_MAX_INTERMEDIATES
+#define UDS29_MAX_INTERMEDIATES 2u    /* intermediate CA certificates (and CRL files: one more) in a PKI config */
+#endif
+#define UDS29_MAX_CRLS (UDS29_MAX_INTERMEDIATES + 1u)
 #ifndef UDS29_P2_TIMEOUT_MS
 #define UDS29_P2_TIMEOUT_MS 5000u     /* non-blocking API: max wait for each response before the session FAILS */
 #endif

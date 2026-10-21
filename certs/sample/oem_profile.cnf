@@ -7,21 +7,25 @@
 #   .3  allowed DIDs   OCTET STRING, two bytes (big endian) per data identifier
 #   .4  allowed RIDs   OCTET STRING, two bytes per routine identifier
 #   .5  roles (alt)    INTEGER mask, same meaning as .1 (only in tester_oem, to exercise INTEGER_MASK)
+#   EKU 1.3.6.1.4.1.99999.29.100 marks a tester certificate (the ECU certificate carries .101); EXAMPLE, see docs/certificate-validation.md
 # Non-critical extensions: a verifier that does not know them still accepts the certificate.
 
 [workshop]
 basicConstraints=CA:FALSE
 keyUsage=digitalSignature
+extendedKeyUsage=1.3.6.1.4.1.99999.29.100
 1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:0
 
 [engineering]
 basicConstraints=CA:FALSE
 keyUsage=digitalSignature
+extendedKeyUsage=1.3.6.1.4.1.99999.29.100
 1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:1
 
 [oem]
 basicConstraints=CA:FALSE
 keyUsage=digitalSignature
+extendedKeyUsage=1.3.6.1.4.1.99999.29.100
 1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:2
 1.3.6.1.4.1.99999.29.5=ASN1:INTEGER:4
 
@@ -29,6 +33,7 @@ keyUsage=digitalSignature
 [allowlist]
 basicConstraints=CA:FALSE
 keyUsage=digitalSignature
+extendedKeyUsage=1.3.6.1.4.1.99999.29.100
 1.3.6.1.4.1.99999.29.1=ASN1:FORMAT:BITLIST,BITSTRING:2
 1.3.6.1.4.1.99999.29.2=ASN1:FORMAT:HEX,OCTETSTRING:223E
 1.3.6.1.4.1.99999.29.3=ASN1:FORMAT:HEX,OCTETSTRING:F190F18C

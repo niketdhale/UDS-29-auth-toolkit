@@ -24,6 +24,7 @@ void Uds29_IdsM_GetDefaultConfig(Uds29_IdsM_ConfigType* c) {
 }
 
 void Uds29_IdsM_OnEvent(const Uds29_EventType* e) {
+    if (e->kind == UDS29_EVT_WARNING) return;
     Uds29_IdsM_MapEntry m = {0, IDSM_SEVERITY_LOW, false};
     IdsM_MonitorIdType mon = 0;
     bool payload = false;

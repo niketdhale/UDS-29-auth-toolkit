@@ -13,6 +13,7 @@
 #include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
 #include <mbedtls/pk.h>
+#include <mbedtls/x509_crl.h>
 #include <mbedtls/x509_crt.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,7 +22,8 @@
 
 typedef struct {
     bool used;
-    mbedtls_x509_crt root, cert;
+    mbedtls_x509_crt root, cert, inter;
+    mbedtls_x509_crl crl;
     mbedtls_pk_context key;
 } Ident;
 
@@ -65,6 +67,14 @@ static bool ParseCert(mbedtls_x509_crt* c, const char* path, Uds29_PkiFormatType
     return strstr((char*)b, "-----BEGIN CERTIFICATE-----") && mbedtls_x509_crt_parse(c, b, n + 1) == 0;
 }
 
+static bool ParseCrl(mbedtls_x509_crl* c, const char* path, Uds29_PkiFormatType fmt) {
+    uint8_t b[4097]; /* ponytail: CRL files up to 4 KiB per file; raise for bigger lists */
+    size_t n;
+    if (!ReadFile(path, b, sizeof b, &n)) return false;
+    if (fmt == UDS29_PKI_FORMAT_DER) return mbedtls_x509_crl_parse_der(c, b, n) == 0;
+    return strstr((char*)b, "-----BEGIN X509 CRL-----") && mbedtls_x509_crl_parse(c, b, n + 1) == 0;
+}
+
 static bool ParseKey(mbedtls_pk_context* k, const char* path, Uds29_PkiFormatType fmt) {
     uint8_t b[2 * UDS29_MAX_CERT_LEN + 1];
     size_t n;
@@ -95,14 +105,25 @@ static int Cmp(const mbedtls_x509_time* a, const mbedtls_x509_time* b) {
     return 0;
 }
 
-/* Re-judges the validity period of every certificate of the chain at the time given in *p (the time override). */
+typedef struct { int64_t at; mbedtls_x509_crl* crls; } TimeCtx;
+
+/* Re-judges certificate and CRL freshness at the time given in tc->at (the time override), or not at all (skip). */
 static int VerifyAt(void* p, mbedtls_x509_crt* c, int depth, uint32_t* flags) {
     (void)depth;
+    const TimeCtx* tc = p;
+    const uint32_t time_flags = MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE |
+                                MBEDTLS_X509_BADCRL_EXPIRED | MBEDTLS_X509_BADCRL_FUTURE;
+    *flags &= ~time_flags;
+    if (tc->at == UDS29_AT_SKIP_VALIDITY) return 0;
     mbedtls_x509_time now;
-    FromUnix(*(const int64_t*)p, &now);
-    *flags &= ~(uint32_t)(MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE);
+    FromUnix(tc->at, &now);
     if (Cmp(&now, &c->valid_from) < 0) *flags |= MBEDTLS_X509_BADCERT_FUTURE;
     if (Cmp(&now, &c->valid_to) > 0) *flags |= MBEDTLS_X509_BADCERT_EXPIRED;
+    for (const mbedtls_x509_crl* l = tc->crls; l && l->version; l = l->next) {
+        if (l->issuer_raw.len != c->issuer_raw.len || memcmp(l->issuer_raw.p, c->issuer_raw.p, l->issuer_raw.len)) continue;
+        if (Cmp(&now, &l->this_update) < 0) *flags |= MBEDTLS_X509_BADCRL_FUTURE;
+        if (l->next_update.year && Cmp(&now, &l->next_update) > 0) *flags |= MBEDTLS_X509_BADCRL_EXPIRED;
+    }
     return 0;
 }
 
@@ -111,7 +132,8 @@ static void FreeIdentity(void* ctx, void* h) {
     Ident* id = h;
     if (!id) return;
     Uds29_Os_Lock();
-    mbedtls_x509_crt_free(&id->root); mbedtls_x509_crt_free(&id->cert); mbedtls_pk_free(&id->key);
+    mbedtls_x509_crt_free(&id->root); mbedtls_x509_crt_free(&id->cert); mbedtls_x509_crt_free(&id->inter);
+    mbedtls_x509_crl_free(&id->crl); mbedtls_pk_free(&id->key);
     id->used = false;
     Uds29_Os_Unlock();
 }
@@ -124,10 +146,16 @@ static Uds29_PkiResult VerifyPeer(void* ctx, void* h, const uint8_t* der, uint16
     Uds29_PkiResult res = UDS29_PKI_PARSE;
     if (len && mbedtls_x509_crt_parse_der(&c, der, len) == 0) {
         uint32_t flags = 0;
-        int r = mbedtls_x509_crt_verify(&c, &id->root, NULL, NULL, &flags, at ? VerifyAt : NULL, &at);
+        TimeCtx tc = {at, id->crl.version ? &id->crl : NULL};
+        bool ok = true;
+        /* the intermediates follow the leaf in the chain: untrusted, only chained through */
+        for (const mbedtls_x509_crt* i = id->inter.version ? &id->inter : NULL; ok && i; i = i->next)
+            ok = mbedtls_x509_crt_parse_der(&c, i->raw.p, i->raw.len) == 0;
+        int r = ok ? mbedtls_x509_crt_verify(&c, &id->root, tc.crls, NULL, &flags, at ? VerifyAt : NULL, &tc) : -1;
         if (r == 0) res = UDS29_PKI_OK;
-        else if (!(flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) &&
-                 (flags & (MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE))) res = UDS29_PKI_EXPIRED;
+        else if ((flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) || !ok) res = UDS29_PKI_CHAIN;
+        else if (flags & MBEDTLS_X509_BADCERT_REVOKED) res = UDS29_PKI_REVOKED;
+        else if (flags & (MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE)) res = UDS29_PKI_EXPIRED;
         else res = UDS29_PKI_CHAIN;
     }
     mbedtls_x509_crt_free(&c);
@@ -140,17 +168,23 @@ static void* LoadIdentity(void* ctx, const Uds29_PkiConfigType* cfg, uint8_t* ce
     for (int i = 0; i < MAX_IDENTITIES && !id; i++) if (!g_ids[i].used) id = &g_ids[i];
     if (id) {
         id->used = true;
-        mbedtls_x509_crt_init(&id->root); mbedtls_x509_crt_init(&id->cert); mbedtls_pk_init(&id->key);
+        mbedtls_x509_crt_init(&id->root); mbedtls_x509_crt_init(&id->cert); mbedtls_x509_crt_init(&id->inter);
+        mbedtls_x509_crl_init(&id->crl); mbedtls_pk_init(&id->key);
     }
     Uds29_Os_Unlock();
     if (!id) return NULL;
-    if (ParseCert(&id->root, cfg->root_ca_path, cfg->format) && ParseCert(&id->cert, cfg->cert_path, cfg->format) &&
+    bool ok = ParseCert(&id->root, cfg->root_ca_path, cfg->format) && ParseCert(&id->cert, cfg->cert_path, cfg->format);
+    for (unsigned i = 0; ok && i < UDS29_MAX_INTERMEDIATES && cfg->intermediate_paths[i]; i++)
+        ok = ParseCert(&id->inter, cfg->intermediate_paths[i], cfg->format);
+    for (unsigned i = 0; ok && i < UDS29_MAX_CRLS && cfg->crl_paths[i]; i++)
+        ok = ParseCrl(&id->crl, cfg->crl_paths[i], cfg->format);
+    if (ok &&
         ParseKey(&id->key, cfg->key_path, cfg->format) && mbedtls_pk_can_do(&id->key, MBEDTLS_PK_ECDSA) &&
         mbedtls_pk_check_pair(&id->cert.pk, &id->key, Rng, NULL) == 0 &&
         id->cert.raw.len <= cap && id->cert.raw.len <= 0xFFFFu) {
         memcpy(cert_der, id->cert.raw.p, id->cert.raw.len);
         *cert_len = (uint16_t)id->cert.raw.len;
-        if (VerifyPeer(ctx, id, cert_der, *cert_len, 0) == UDS29_PKI_OK) return id;
+        if (VerifyPeer(ctx, id, cert_der, *cert_len, cfg->skip_validity_check ? UDS29_AT_SKIP_VALIDITY : 0) == UDS29_PKI_OK) return id;
     }
     FreeIdentity(ctx, id);
     return NULL;
@@ -211,7 +245,12 @@ static Std_ReturnType GetExtension(void* ctx, const uint8_t* cert_der, uint16_t 
     return r;
 }
 
+static Std_ReturnType Sha256(void* ctx, const uint8_t* data, uint16_t len, uint8_t out[32]) {
+    (void)ctx;
+    return mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), data, len, out) == 0 ? E_OK : E_NOT_OK;
+}
+
 const Uds29_CryptoOpsType* Uds29_Crypto_BuiltinOps(void) {
-    static const Uds29_CryptoOpsType ops = {NULL, LoadIdentity, FreeIdentity, VerifyPeer, Sign, Verify, Random, GetExtension};
+    static const Uds29_CryptoOpsType ops = {NULL, LoadIdentity, FreeIdentity, VerifyPeer, Sign, Verify, Random, GetExtension, Sha256};
     return &ops;
 }
