@@ -76,36 +76,25 @@ printf 'pki sample\nauth bi\nquit\n' | ./build/uds29_cli                        
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph APP["Application"]
-        T["Tester task"]
-        D["Diagnostic stack / DCM"]
-    end
-    subgraph LIB["libuds29"]
-        CL["Client: Uds29.h<br/>state machine, log, events"]
-        SV["Server: Uds29_Server.h<br/>state machine, role check, timeout"]
-        CO["Codec: Uds29_Codec.h"]
-        CR["Crypto port: Uds29_Crypto.h"]
-        OS["OS port: Uds29_Os.h"]
-    end
-    T --> CL
-    D --> SV
-    CL --> CO
-    SV --> CO
-    CL --> CR
-    SV --> CR
-    CL --> OS
-    SV --> OS
-    CL -->|"request bytes"| TP["Transport: CAN ISO-TP, DoIP, loopback"]
-    TP -->|"request bytes"| D
-    CR --> B1["OpenSSL"]
-    CR --> B2["mbedTLS"]
-    CR --> B3["HSM / custom ops"]
-    OS --> O1["POSIX: Linux, QNX"]
-    OS --> O2["FreeRTOS"]
-    CL -.-> IDS["IDSM bridge (optional)"]
-    SV -.-> IDS
+```text
+ Tester application                          ECU diagnostic stack (DCM)
+        │ Uds29_* API                                    ▲
+        ▼                                                │ Uds29Srv_HandleRequest()
+ ┌──────────────────────┐                    ┌───────────┴──────────┐
+ │ Client               │   request bytes    │ Server               │
+ │ (Uds29.h)            │ ──── CAN ISO-TP ─▶ │ (Uds29_Server.h)     │
+ │ state machine,       │ ──── DoIP ───────▶ │ state machine, role, │
+ │ log, events          │ ◀─── response ──── │ timeout, access ctrl │
+ └──────────┬───────────┘                    └───────────┬──────────┘
+            └──────────────────┬─────────────────────────┘
+                               ▼ shared by both
+              ┌────────────────────────────────┐
+              │ Codec        Uds29_Codec.h     │
+              │ Crypto port  Uds29_Crypto.h  ──┼──▶ OpenSSL │ mbedTLS │ HSM / custom
+              │ OS port      Uds29_Os.h      ──┼──▶ POSIX (Linux, QNX) │ FreeRTOS
+              └────────────────────────────────┘
+
+ optional:  client / server events ┄┄▶ IDSM bridge ┄┄▶ IdsM_ReportEvent()
 ```
 
 The transport is not part of the library. Blocking client: you give a function that sends and returns the reply.
