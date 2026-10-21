@@ -1,15 +1,53 @@
 name: ci
-on: [push, pull_request]
+
+# Minutes-saving layout:
+# - runs only for PRs into develop/main (no branch-push or tag runs) and by hand
+# - doc-only changes are skipped
+# - a newer push to the same PR cancels the older run
+# - PR into develop: one quick job; PR into main or manual "full": the whole matrix
+on:
+  pull_request:
+    branches: [develop, main]
+    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Run the full matrix"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  # Default build (OpenSSL, client + server). ctest already covers the DoIP two-process demo,
+  # ISO-TP loopback, authz and access-control demo. Also checks install + find_package.
+  quick:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-quick-${{ hashFiles('CMakeLists.txt') }}
+      - run: cmake -S . -B build && cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure -j4
+      - run: cmake --install build --prefix "$RUNNER_TEMP/prefix"
+      - run: cmake -S examples/consumer -B consumer-build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/prefix"
+      - run: cmake --build consumer-build && ./consumer-build/consumer
+
+  full:
+    needs: quick
+    if: github.base_ref == 'main' || (github.event_name == 'workflow_dispatch' && inputs.full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
-          - name: openssl
-            flags: ""
           - name: mbedtls
             flags: "-DUDS29_CRYPTO=MBEDTLS"
           - name: freertos-compile-check
@@ -34,20 +72,20 @@ jobs:
           repository: niketdhale/autosar-idsm-toolkit
           path: autosar-idsm-toolkit
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ matrix.name }}-${{ hashFiles('uds29/CMakeLists.txt') }}
       - run: cmake -S uds29 -B build ${{ matrix.flags }}
       - run: cmake --build build -j
-      - run: ctest --test-dir build --output-on-failure
-      # two-process DoIP demo (also ctest doip_demo_uni / doip_demo_bi) and the ISO-TP loopback tests; ROLE=BOTH only
-      - name: two-process DoIP demo
-        if: "!contains(matrix.flags, 'UDS29_ROLE=')"
-        run: sh uds29/tests/run_doip_demo.sh build/doip_server_demo build/doip_client_demo bi
-      - name: ISO-TP loopback and access control tests
-        if: "!contains(matrix.flags, 'UDS29_ROLE=')"
-        run: ./build/test_isotp && ./build/test_authz && ./build/access_control_demo
+      - run: ctest --test-dir build --output-on-failure -j4
 
-  # Raw SocketCAN demos over a virtual CAN interface. The runner kernel may lack the vcan module: not a gate.
+  # Raw SocketCAN demos over vcan. The runner kernel may lack the vcan module: not a gate.
   socketcan:
+    needs: quick
+    if: github.base_ref == 'main' || (github.event_name == 'workflow_dispatch' && inputs.full)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -59,13 +97,3 @@ jobs:
       - run: cmake -S . -B build && cmake --build build -j
       - run: sh tests/run_can_demo.sh build/can_server_demo build/can_client_demo uni vcan0
       - run: sh tests/run_can_demo.sh build/can_server_demo build/can_client_demo bi vcan0
-
-  install-consumer:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - run: cmake -S . -B build && cmake --build build -j
-      - run: cmake --install build --prefix "$RUNNER_TEMP/prefix"
-      - run: cmake -S examples/consumer -B consumer-build -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/prefix"
-      - run: cmake --build consumer-build && ./consumer-build/consumer
